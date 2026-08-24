@@ -1,5 +1,6 @@
 import Testing
 import GPUMonitorCore
+import UserNotifications
 @testable import GPUMonitorNotifications
 
 private enum FakeCenterError: Error {
@@ -39,6 +40,21 @@ private actor FakeNotificationCenter: UserNotificationCenterClient {
 
     var recordedRequests: [MacOSNotificationRequest] { requests }
     var requestCount: Int { authorizationRequestCount }
+}
+
+@Test func foregroundDelegateIsInstalledAndStronglyRetainedWithVisiblePresentationOptions() {
+    weak var installedDelegate: ForegroundNotificationDelegate?
+    var installation: ForegroundNotificationDelegateInstallation? =
+        ForegroundNotificationDelegateInstallation { delegate in
+            installedDelegate = delegate
+        }
+
+    #expect(installedDelegate != nil)
+    #expect(installedDelegate?.presentationOptions == [.banner, .list, .sound])
+
+    installation = nil
+    #expect(installation == nil)
+    #expect(installedDelegate == nil)
 }
 
 @Test func macOSSinkContinuesAfterFailuresAndReturnsSanitizedResult() async {

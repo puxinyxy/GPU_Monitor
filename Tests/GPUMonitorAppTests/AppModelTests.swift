@@ -34,6 +34,53 @@ private actor FakeNotifications: NotificationSink, NotificationAuthorizationProv
     }
 }
 
+private actor MutableAuthorizationProvider: NotificationAuthorizationProviding {
+    private var state: NotificationAuthorizationState
+    private(set) var stateReads = 0
+
+    init(state: NotificationAuthorizationState) {
+        self.state = state
+    }
+
+    func requestAuthorization() async -> NotificationAuthorizationState { state }
+
+    func authorizationState() async -> NotificationAuthorizationState {
+        stateReads += 1
+        return state
+    }
+
+    func setState(_ newState: NotificationAuthorizationState) {
+        state = newState
+    }
+}
+
+private actor ControlledAuthorizationStateProvider: NotificationAuthorizationProviding {
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var stateContinuation: CheckedContinuation<NotificationAuthorizationState, Never>?
+    private var started = false
+    private(set) var stateReads = 0
+
+    func requestAuthorization() async -> NotificationAuthorizationState { .notDetermined }
+
+    func authorizationState() async -> NotificationAuthorizationState {
+        stateReads += 1
+        started = true
+        startedWaiter?.resume()
+        startedWaiter = nil
+        return await withCheckedContinuation { stateContinuation = $0 }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func release(_ state: NotificationAuthorizationState) {
+        stateContinuation?.resume(returning: state)
+        stateContinuation = nil
+    }
+}
+
 private actor CycleSource {
     private let cycles: [MonitorCycle]
     private(set) var calls = 0
@@ -390,6 +437,105 @@ private func cycle(
     completedAt: Date = Date(timeIntervalSince1970: 200)
 ) -> MonitorCycle {
     MonitorCycle(snapshots: snapshots, health: health, events: events, completedAt: completedAt)
+}
+
+@Test @MainActor
+func refreshReReadsNotificationAuthorizationAfterSettingsChange() async {
+    let notifications = FakeNotifications()
+    let authorization = MutableAuthorizationProvider(state: .authorized)
+    let model = AppModel(
+        servers: [server10222],
+        poll: { cycle(snapshots: [:], health: [server10222.id: .online]) },
+        notifications: notifications,
+        authorizationProvider: authorization,
+        sleep: { _ in throw CancellationError() }
+    )
+
+    await model.refresh()
+    #expect(model.notificationAuthorization == .authorized)
+
+    await authorization.setState(.denied)
+    await model.refresh()
+
+    #expect(model.notificationAuthorization == .denied)
+    #expect(await authorization.stateReads == 2)
+    await model.stop()
+}
+
+@Test @MainActor
+func overlappingAuthorizationRefreshesShareOneProviderRead() async {
+    let notifications = FakeNotifications()
+    let authorization = ControlledAuthorizationStateProvider()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { cycle(snapshots: [:], health: [:]) },
+        notifications: notifications,
+        authorizationProvider: authorization,
+        sleep: { _ in throw CancellationError() }
+    )
+
+    let first = Task { await model.refreshNotificationAuthorization() }
+    await authorization.waitUntilStarted()
+    let second = Task { await model.refreshNotificationAuthorization() }
+    for _ in 0..<100 { await Task.yield() }
+
+    #expect(await authorization.stateReads == 1)
+    await authorization.release(.provisional)
+    await first.value
+    await second.value
+    #expect(model.notificationAuthorization == .provisional)
+    await model.stop()
+}
+
+@Test @MainActor
+func stoppedModelDiscardsLateAuthorizationState() async {
+    let notifications = FakeNotifications()
+    let authorization = ControlledAuthorizationStateProvider()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { cycle(snapshots: [:], health: [:]) },
+        notifications: notifications,
+        authorizationProvider: authorization,
+        sleep: { _ in throw CancellationError() }
+    )
+    let refresh = Task { await model.refreshNotificationAuthorization() }
+    await authorization.waitUntilStarted()
+
+    await model.stop()
+    await authorization.release(.denied)
+    await refresh.value
+
+    #expect(model.notificationAuthorization == .notDetermined)
+}
+
+@Test @MainActor
+func stopDoesNotWaitForNonCooperativeAuthorizationStateRead() async {
+    let notifications = FakeNotifications()
+    let authorization = ControlledAuthorizationStateProvider()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { cycle(snapshots: [:], health: [:]) },
+        notifications: notifications,
+        authorizationProvider: authorization,
+        sleep: { _ in throw CancellationError() }
+    )
+    let refresh = Task { await model.refreshNotificationAuthorization() }
+    await authorization.waitUntilStarted()
+    let stopFinished = CompletionFlag()
+    let stop = Task {
+        await model.stop()
+        await stopFinished.markCompleted()
+    }
+
+    for _ in 0..<200 where !(await stopFinished.completed) {
+        try? await ContinuousClock().sleep(for: .milliseconds(1))
+    }
+    #expect(await stopFinished.completed)
+
+    await authorization.release(.authorized)
+    await stop.value
+    await refresh.value
+    #expect(model.notificationAuthorization == .notDetermined)
 }
 
 @Test @MainActor

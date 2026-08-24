@@ -3,11 +3,13 @@ import SwiftUI
 
 @main
 struct GPUMonitorApp: App {
+    @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var lifecycleDelegate
     @StateObject private var model: AppModel
 
     init() {
         let liveModel = AppModel.live()
         _model = StateObject(wrappedValue: liveModel)
+        lifecycleDelegate.configure(model: liveModel)
         Task { @MainActor in
             await liveModel.start()
         }

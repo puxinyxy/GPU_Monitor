@@ -41,11 +41,13 @@ gpu-monitor/
 │   │   ├── SSHGPUProbe.swift            # Restricted SSH argument construction and sampling
 │   │   ├── MonitorCoordinator.swift     # Concurrent server polling and event production
 │   │   └── NotificationFormatter.swift  # Human-readable, aggregated event text
+│   ├── GPUMonitorNotifications/
+│   │   └── MacOSNotificationSink.swift  # UserNotifications delivery and foreground delegate
 │   └── GPUMonitorApp/
 │       ├── GPUMonitorApp.swift          # MenuBarExtra entry point
+│       ├── AppLifecycleDelegate.swift   # AppKit activation and graceful termination bridge
 │       ├── AppModel.swift               # App lifecycle, 15-second loop, published UI state
-│       ├── MenuContentView.swift        # Server/GPU rows and controls
-│       └── MacOSNotificationSink.swift  # UserNotifications implementation
+│       └── MenuContentView.swift        # Server/GPU rows and controls
 ├── Tests/GPUMonitorCoreTests/
 │   ├── ConfigurationStoreTests.swift
 │   ├── TestSupport.swift
@@ -580,7 +582,7 @@ git commit -m "feat: coordinate concurrent GPU server polling"
 
 **Files:**
 - Create: `Sources/GPUMonitorCore/NotificationFormatter.swift`
-- Create: `Sources/GPUMonitorApp/MacOSNotificationSink.swift`
+- Create: `Sources/GPUMonitorNotifications/MacOSNotificationSink.swift`
 - Test: `Tests/GPUMonitorCoreTests/NotificationFormatterTests.swift`
 
 **Interfaces:**
@@ -628,7 +630,7 @@ public protocol NotificationSink {
 }
 ```
 
-Sort GPU indices numerically. Produce separate free and busy messages per server, plus one offline/recovered message for each connectivity event. `MacOSNotificationSink` requests `.alert` and `.sound` authorization, converts each message to `UNMutableNotificationContent`, and schedules it with a UUID identifier.
+Sort GPU indices numerically. Produce separate free and busy messages per server, plus one offline/recovered message for each connectivity event. `MacOSNotificationSink` requests `.alert` and `.sound` authorization, converts each message to `UNMutableNotificationContent`, and schedules it with a UUID identifier. Install and strongly retain a `UNUserNotificationCenterDelegate` before startup so foreground notifications use `.banner`, `.list`, and `.sound`.
 
 - [ ] **Step 4: Run tests and compile the app target**
 
@@ -639,7 +641,7 @@ Expected: all tests PASS and app target builds.
 - [ ] **Step 5: Commit notification delivery**
 
 ```bash
-git add Sources/GPUMonitorCore/NotificationFormatter.swift Sources/GPUMonitorApp/MacOSNotificationSink.swift Tests/GPUMonitorCoreTests/NotificationFormatterTests.swift
+git add Sources/GPUMonitorCore/NotificationFormatter.swift Sources/GPUMonitorNotifications/MacOSNotificationSink.swift Tests/GPUMonitorCoreTests/NotificationFormatterTests.swift
 git commit -m "feat: deliver aggregated GPU status notifications"
 ```
 
@@ -649,6 +651,7 @@ git commit -m "feat: deliver aggregated GPU status notifications"
 
 **Files:**
 - Modify: `Sources/GPUMonitorApp/GPUMonitorApp.swift`
+- Create: `Sources/GPUMonitorApp/AppLifecycleDelegate.swift`
 - Create: `Sources/GPUMonitorApp/AppModel.swift`
 - Create: `Sources/GPUMonitorApp/MenuContentView.swift`
 
@@ -722,7 +725,9 @@ struct GPUMonitorApp: App {
 
 `MenuContentView` renders servers in configuration order. Each GPU row displays occupancy, utilization, `used / total` memory in MiB or GiB, temperature, and the first process name/PID when busy. It renders `unknown`, short failure, and offline states distinctly. The footer contains the last-updated time, a disabled-while-running “立即刷新” button, and an “退出” button calling `NSApplication.shared.terminate(nil)`.
 
-`AppModel.live()` creates the configuration store, probe, coordinator, and notification sink but does not create a second timer. `GPUMonitorApp.init()` starts the model exactly once, independently of whether the menu is opened. The `guard loopTask == nil` condition makes repeated lifecycle calls harmless.
+`AppModel.live()` creates the configuration store, probe, coordinator, and notification sink but does not create a second timer. `GPUMonitorApp.init()` installs an `@NSApplicationDelegateAdaptor`, configures it with the live model, then starts the model exactly once, independently of whether the menu is opened. Manual and periodic refreshes re-read notification authorization; application activation triggers the same coalesced read. Cancellation or a non-cooperative authorization provider cannot delay `stop()`, and late results after a lifecycle-generation change are discarded.
+
+`AppLifecycleDelegate.applicationShouldTerminate` returns `.terminateLater`, awaits one shared `model.stop()`, then calls `reply(toApplicationShouldTerminate: true)`. Repeated termination requests do not duplicate shutdown. The menu's “退出” action only calls `NSApplication.shared.terminate(nil)` so all normal quit paths share the AppKit bridge.
 
 - [ ] **Step 3: Build and run a local development smoke test**
 
@@ -781,7 +786,7 @@ codesign --force --deep --sign - "$app_dir"
 codesign --verify --deep --strict --verbose=2 "$app_dir"
 ```
 
-`scripts/install_app.sh` stops any running copy, replaces only `/Applications/GPU Monitor.app` with the freshly packaged app using `ditto`, verifies the installed signature, and opens it. It must never touch other applications.
+`scripts/install_app.sh` first detects only the current user's process whose executable path exactly equals `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor`. When present it requests graceful quit through `/usr/bin/osascript` using the fixed bundle identifier, waits boundedly for that exact process to disappear, and fails closed if the Apple event fails or the app remains alive. It never sends SIGTERM/SIGKILL. It then replaces only `/Applications/GPU Monitor.app` with the freshly packaged app using `ditto`, verifies the installed signature, and opens it. It must never touch other applications.
 
 - [ ] **Step 3: Add an interactive password-free-source SSH provisioning script**
 

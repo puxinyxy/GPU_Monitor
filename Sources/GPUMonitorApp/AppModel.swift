@@ -45,6 +45,12 @@ public final class AppModel: ObservableObject {
         let task: Task<RefreshResult?, Never>
     }
 
+    private struct ActiveAuthorizationRefresh {
+        let generation: UInt64
+        let lifecycleGeneration: UInt64
+        let task: Task<NotificationAuthorizationState, Never>
+    }
+
     private enum LifecycleState {
         case idle
         case running
@@ -75,6 +81,8 @@ public final class AppModel: ObservableObject {
     private var loopTask: Task<Void, Never>?
     private var nextRefreshGeneration: UInt64 = 0
     private var activeRefresh: ActiveRefresh?
+    private var nextAuthorizationRefreshGeneration: UInt64 = 0
+    private var activeAuthorizationRefresh: ActiveAuthorizationRefresh?
     private var shutdownTask: Task<Void, Never>?
     private var shutdownGeneration: UInt64?
 
@@ -152,6 +160,8 @@ public final class AppModel: ObservableObject {
 
     public func refresh() async {
         guard lifecycleState != .stopping, lifecycleState != .stopped else { return }
+        await refreshNotificationAuthorization()
+        guard lifecycleState != .stopping, lifecycleState != .stopped else { return }
         let refresh: ActiveRefresh
         if let activeRefresh {
             refresh = activeRefresh
@@ -183,6 +193,41 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    public func refreshNotificationAuthorization() async {
+        guard lifecycleState != .stopping, lifecycleState != .stopped else { return }
+
+        let refresh: ActiveAuthorizationRefresh
+        if let activeAuthorizationRefresh {
+            refresh = activeAuthorizationRefresh
+        } else {
+            nextAuthorizationRefreshGeneration &+= 1
+            let generation = nextAuthorizationRefreshGeneration
+            let lifecycleGeneration = lifecycleGeneration
+            let task = Task<NotificationAuthorizationState, Never> { [authorizationProvider] in
+                await authorizationProvider.authorizationState()
+            }
+            refresh = ActiveAuthorizationRefresh(
+                generation: generation,
+                lifecycleGeneration: lifecycleGeneration,
+                task: task
+            )
+            activeAuthorizationRefresh = refresh
+        }
+
+        let authorization = await refresh.task.value
+        guard activeAuthorizationRefresh?.generation == refresh.generation else { return }
+        activeAuthorizationRefresh = nil
+        guard lifecycleGeneration == refresh.lifecycleGeneration,
+              lifecycleState != .stopping,
+              lifecycleState != .stopped else {
+            return
+        }
+        notificationAuthorization = authorization
+        if authorization == .error {
+            recentErrorSummary = "通知授权状态读取失败"
+        }
+    }
+
     public func stop() async {
         switch lifecycleState {
         case .stopped:
@@ -203,11 +248,14 @@ public final class AppModel: ObservableObject {
         let startup = startupTask
         let loop = loopTask
         let refresh = activeRefresh
+        let authorizationRefresh = activeAuthorizationRefresh
         startupTask = nil
         loopTask = nil
+        activeAuthorizationRefresh = nil
         startup?.cancel()
         loop?.cancel()
         refresh?.task.cancel()
+        authorizationRefresh?.task.cancel()
 
         let shutdown = Task<Void, Never> { [cancelPoll] in
             await cancelPoll()
@@ -326,6 +374,7 @@ public final class AppModel: ObservableObject {
         startupTask?.cancel()
         loopTask?.cancel()
         activeRefresh?.task.cancel()
+        activeAuthorizationRefresh?.task.cancel()
         shutdownTask?.cancel()
     }
 }

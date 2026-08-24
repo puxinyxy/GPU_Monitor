@@ -222,10 +222,7 @@ private struct StatusFooter: View {
                 Spacer()
 
                 Button("退出") {
-                    Task { @MainActor in
-                        await model.stop()
-                        NSApplication.shared.terminate(nil)
-                    }
+                    NSApplication.shared.terminate(nil)
                 }
                 .keyboardShortcut("q")
             }

@@ -62,6 +62,9 @@ package_script="$project_dir/scripts/package_app.sh"
 install_script="$project_dir/scripts/install_app.sh"
 provision_script="$project_dir/scripts/provision_ssh.sh"
 readme="$project_dir/README.md"
+app_entry="$project_dir/Sources/GPUMonitorApp/GPUMonitorApp.swift"
+menu_view="$project_dir/Sources/GPUMonitorApp/MenuContentView.swift"
+lifecycle_delegate="$project_dir/Sources/GPUMonitorApp/AppLifecycleDelegate.swift"
 
 check "package script uses exact app path guard" file_contains "$package_script" '[[ "$app_dir" == "$project_dir/dist/GPU Monitor.app" ]] || exit 2'
 check "package script removes only its exact bundle" file_contains "$package_script" 'rm -rf "$app_dir"'
@@ -77,6 +80,22 @@ check "installer reads executable paths rather than basenames" file_contains "$i
 check "installer requires an exact installed executable match" file_contains "$install_script" '"$process_executable" == "$installed_executable"'
 check "installer does not use global pgrep matching" file_not_contains "$install_script" 'pgrep'
 check "installer does not use global pkill matching" file_not_contains "$install_script" 'pkill'
+check "installer uses the fixed bundle identifier" file_contains "$install_script" 'bundle_identifier="com.yxy.gpumonitor"'
+check "installer requests graceful quit through Apple events" file_contains "$install_script" '/usr/bin/osascript'
+check "installer targets graceful quit by bundle identifier" file_contains "$install_script" 'tell application id \"$bundle_identifier\" to quit'
+check "installer fails closed when graceful quit fails" file_contains "$install_script" 'Unable to request a graceful GPU Monitor quit; installation stopped.'
+check "installer waits for the exact process after graceful quit" file_contains "$install_script" 'The installed GPU Monitor copy did not quit gracefully; installation stopped.'
+check "installer never sends SIGTERM" file_not_contains "$install_script" 'kill -TERM'
+check "installer never sends SIGKILL" file_not_contains "$install_script" 'kill -KILL'
+check "installer never invokes the kill utility" file_not_contains "$install_script" '/bin/kill'
+
+check "app installs the AppKit lifecycle delegate before startup" file_contains "$app_entry" '@NSApplicationDelegateAdaptor(AppLifecycleDelegate.self)'
+check "app configures the lifecycle delegate with the live model" file_contains "$app_entry" 'lifecycleDelegate.configure(model: liveModel)'
+check "lifecycle delegate defers termination" file_contains "$lifecycle_delegate" 'return .terminateLater'
+check "lifecycle delegate replies only after model stop" file_text_precedes "$lifecycle_delegate" 'await model?.stop()' 'reply(true)'
+check "application activation refreshes authorization" file_contains "$lifecycle_delegate" 'model.refreshNotificationAuthorization()'
+check "menu quit delegates shutdown to NSApplication" file_contains "$menu_view" 'NSApplication.shared.terminate(nil)'
+check "menu quit does not duplicate model shutdown" file_not_contains "$menu_view" 'await model.stop()'
 
 forced_command='command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\''\n__GPU_MONITOR_PROCESSES__\n'\'' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits"'
 check "provisioner installs the exact forced command" file_contains "$provision_script" "$forced_command"
@@ -109,9 +128,14 @@ check "provisioner reports a learned fingerprint" file_contains "$provision_scri
 check "README has exact repository command" file_contains "$readme" 'cd /Users/yxy/Documents/workspace/gpu-monitor'
 check "README has exact provision command" file_contains "$readme" './scripts/provision_ssh.sh'
 check "README has exact test command" file_contains "$readme" 'swift run GPUMonitorCoreTestsRunner'
+check "README has app test command" file_contains "$readme" 'swift run GPUMonitorAppTestsRunner'
+check "README has packaging policy test command" file_contains "$readme" 'zsh Tests/PackagingTests/package_scripts_test.sh'
+check "README has provisioning behavior test command" file_contains "$readme" 'zsh Tests/PackagingTests/provisioning_behavior_test.sh'
+check "README has strict concurrency verification" file_contains "$readme" '-strict-concurrency=complete -Xswiftc -warnings-as-errors'
 check "README has exact package command" file_contains "$readme" './scripts/package_app.sh'
 check "README has exact install command" file_contains "$readme" './scripts/install_app.sh'
 check "README documents no login-item setup" file_contains "$readme" '不配置开机自启'
+check "README documents graceful installer shutdown" file_contains "$readme" 'Apple Event 请求已安装实例正常退出'
 check "README documents privacy" file_contains "$readme" '隐私'
 check "README documents server editing" file_contains "$readme" 'servers.json'
 check "README keeps remote-key removal explicit" file_contains "$readme" 'authorized_keys'

@@ -1,3 +1,0 @@
-import GPUMonitorNotifications
-
-typealias MacOSNotificationSink = GPUMonitorNotifications.MacOSNotificationSink

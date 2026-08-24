@@ -5,6 +5,7 @@ project_dir=${0:A:h:h}
 source_app="$project_dir/dist/GPU Monitor.app"
 install_dir="/Applications/GPU Monitor.app"
 installed_executable="$install_dir/Contents/MacOS/GPUMonitor"
+bundle_identifier="com.yxy.gpumonitor"
 
 installed_pids() {
     local current_uid process_pid process_uid process_executable
@@ -25,15 +26,18 @@ installed_pids() {
 
 running_pids=(${(f)"$(installed_pids)"})
 if (( ${#running_pids} > 0 )); then
-    /bin/kill -TERM -- "${running_pids[@]}"
-    for _ in {1..20}; do
+    if ! /usr/bin/osascript -e "tell application id \"$bundle_identifier\" to quit" >/dev/null; then
+        print -u2 "Unable to request a graceful GPU Monitor quit; installation stopped."
+        exit 1
+    fi
+    for _ in {1..50}; do
         running_pids=(${(f)"$(installed_pids)"})
         (( ${#running_pids} == 0 )) && break
         /bin/sleep 0.1
     done
     running_pids=(${(f)"$(installed_pids)"})
     if (( ${#running_pids} > 0 )); then
-        print -u2 "The installed GPU Monitor copy is still running; installation stopped."
+        print -u2 "The installed GPU Monitor copy did not quit gracefully; installation stopped."
         exit 1
     fi
 fi

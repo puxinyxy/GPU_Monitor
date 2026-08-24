@@ -20,14 +20,14 @@ let package = Package(
             name: "GPUMonitorUI",
             dependencies: ["GPUMonitorCore", "GPUMonitorNotifications"],
             path: "Sources/GPUMonitorApp",
-            exclude: ["GPUMonitorApp.swift", "MacOSNotificationSink.swift"],
-            sources: ["AppModel.swift", "MenuContentView.swift"]
+            exclude: ["GPUMonitorApp.swift"],
+            sources: ["AppLifecycleDelegate.swift", "AppModel.swift", "MenuContentView.swift"]
         ),
         .executableTarget(
             name: "GPUMonitorApp",
             dependencies: ["GPUMonitorUI"],
             path: "Sources/GPUMonitorApp",
-            exclude: ["AppModel.swift", "MenuContentView.swift", "MacOSNotificationSink.swift"],
+            exclude: ["AppLifecycleDelegate.swift", "AppModel.swift", "MenuContentView.swift"],
             sources: ["GPUMonitorApp.swift"]
         ),
         .executableTarget(

@@ -15,11 +15,39 @@ protocol UserNotificationCenterClient: Sendable {
     func add(_ request: MacOSNotificationRequest) async throws
 }
 
+final class ForegroundNotificationDelegate: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+    let presentationOptions: UNNotificationPresentationOptions = [.banner, .list, .sound]
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler(presentationOptions)
+    }
+}
+
+final class ForegroundNotificationDelegateInstallation: @unchecked Sendable {
+    private let delegate: ForegroundNotificationDelegate
+
+    init(
+        delegate: ForegroundNotificationDelegate = ForegroundNotificationDelegate(),
+        install: (ForegroundNotificationDelegate) -> Void
+    ) {
+        self.delegate = delegate
+        install(delegate)
+    }
+}
+
 actor LiveUserNotificationCenterClient: UserNotificationCenterClient {
     private let center: UNUserNotificationCenter
+    private let foregroundDelegateInstallation: ForegroundNotificationDelegateInstallation
 
     init(center: UNUserNotificationCenter = .current()) {
         self.center = center
+        self.foregroundDelegateInstallation = ForegroundNotificationDelegateInstallation { delegate in
+            center.delegate = delegate
+        }
     }
 
     func requestAuthorization() async throws -> NotificationAuthorizationState {

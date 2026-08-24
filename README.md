@@ -14,7 +14,19 @@ swift run GPUMonitorCoreTestsRunner
 ./scripts/install_app.sh
 ```
 
-`package_app.sh` 生成并验证 `dist/GPU Monitor.app` 的 ad-hoc 签名。`install_app.sh` 重新打包，只停止当前用户从 `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor` 精确路径运行的实例，只替换 `/Applications/GPU Monitor.app`，验证签名后启动应用。安装过程不会修改其他应用，也不会停止调试版本或其他同名进程。
+`package_app.sh` 生成并验证 `dist/GPU Monitor.app` 的 ad-hoc 签名。`install_app.sh` 重新打包；只有检测到当前用户从 `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor` 精确路径运行的实例时，才通过固定 bundle identifier 的 Apple Event 请求已安装实例正常退出，并等待它完成 SSH 子进程清理。Apple Event 失败或实例在限定时间内未退出时，安装会停止，不发送 SIGTERM/SIGKILL。随后脚本只替换 `/Applications/GPU Monitor.app`，验证签名并启动应用。安装过程不会修改其他应用，也不会停止调试版本或其他同名进程。
+
+## 本地验证
+
+以下命令不连接真实服务器、不发送真实通知，也不修改 `/Applications` 或 SSH 配置：
+
+```bash
+swift run GPUMonitorCoreTestsRunner
+swift run GPUMonitorAppTestsRunner
+zsh Tests/PackagingTests/provisioning_behavior_test.sh
+zsh Tests/PackagingTests/package_scripts_test.sh
+swift build -Xswiftc -swift-version -Xswiftc 6 -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+```
 
 ## 状态含义
 
