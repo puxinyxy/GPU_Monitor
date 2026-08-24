@@ -118,7 +118,7 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 ~/Library/Application Support/GPUMonitor/servers.json
 ```
 
-配置只包含服务器标识、地址、端口、用户名、密钥路径和轮询参数，不包含密码。专用 SSH 文件为：
+配置只包含服务器标识、地址、端口、用户名和密钥路径，不包含密码。轮询间隔固定为 15 秒，不属于 `servers.json` 配置。专用 SSH 文件为：
 
 ```text
 ~/.ssh/gpu_monitor_ed25519

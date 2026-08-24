@@ -282,10 +282,17 @@ public struct NVIDIAOutputParser: Sendable {
     public static let marker = "__GPU_MONITOR_PROCESSES__"
 
     public func parse(_ output: String, server: ServerConfig, capturedAt: Date) throws -> ServerSnapshot {
-        let sections = output.components(separatedBy: Self.marker)
-        guard sections.count == 2 else { throw NVIDIAParseError.missingMarker }
-        let processes = try parseProcesses(sections[1])
-        let gpus = try sections[0].split(whereSeparator: \.isNewline).map {
+        let lines = output.components(separatedBy: .newlines)
+        let markerLines = lines.indices.filter { index in
+            lines[index].trimmingCharacters(in: .whitespacesAndNewlines) == Self.marker
+        }
+        guard markerLines.count == 1, let markerLine = markerLines.first else {
+            throw NVIDIAParseError.missingMarker
+        }
+        let gpuSection = lines[..<markerLine].joined(separator: "\n")
+        let processSection = lines[lines.index(after: markerLine)...].joined(separator: "\n")
+        let processes = try parseProcesses(processSection)
+        let gpus = try gpuSection.split(whereSeparator: \.isNewline).map {
             try parseGPU(String($0), processesByUUID: processes)
         }.sorted { $0.index < $1.index }
         guard !gpus.isEmpty else { throw NVIDIAParseError.noGPUs }

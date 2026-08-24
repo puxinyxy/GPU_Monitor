@@ -91,6 +91,9 @@ lifecycle_delegate="$project_dir/Sources/GPUMonitorApp/AppLifecycleDelegate.swif
 notification_sink="$project_dir/Sources/GPUMonitorNotifications/MacOSNotificationSink.swift"
 compatibility_client="$project_dir/Sources/GPUMonitorNotifications/AppleScriptNotificationClient.swift"
 install_behavior_test="$project_dir/Tests/PackagingTests/install_app_behavior_test.sh"
+implementation_plan="$project_dir/docs/superpowers/plans/2026-08-24-gpu-monitor-implementation.md"
+fallback_plan="$project_dir/docs/superpowers/plans/2026-08-24-notification-compatibility-fallback-implementation.md"
+design_spec="$project_dir/docs/superpowers/specs/2026-08-24-gpu-monitor-design.md"
 stale_first_port='102''22'
 
 check "package script uses exact app path guard" file_contains "$package_script" '[[ "$app_dir" == "$project_dir/dist/GPU Monitor.app" ]] || exit 2'
@@ -224,6 +227,12 @@ check "README does not claim unsupported polling fields" file_not_contains "$rea
 check "design installation acceptance is conditional on runtime authorization" file_contains "$project_dir/docs/superpowers/specs/2026-08-24-gpu-monitor-design.md" '原生授权成功时预期由 GPU Monitor 原生投递；只有精确 `notificationsNotAllowed` 且授权状态不是 `denied` 时才预期进入“通知：兼容模式”'
 check "design records the factual 2026-08-24 native acceptance" file_contains "$project_dir/docs/superpowers/specs/2026-08-24-gpu-monitor-design.md" '2026-08-24 实机验收：原生 `com.yxy.gpumonitor` 通知在 10165 第三次连接拒绝附近展示一次，后续观察未重复；本次未在实机触发兼容模式。'
 check "design no longer claims the current ad-hoc install is in compatibility mode" file_not_contains "$project_dir/docs/superpowers/specs/2026-08-24-gpu-monitor-design.md" '当前 ad-hoc 安装显示“通知：兼容模式”'
+check "parser plan rejects marker-substring section splitting" file_not_contains "$implementation_plan" 'output.components(separatedBy: Self.marker)'
+check "parser plan requires one trimmed standalone marker line" file_contains "$implementation_plan" 'trimmingCharacters(in: .whitespacesAndNewlines) == Self.marker'
+check "design does not claim servers.json contains polling parameters" file_not_contains "$design_spec" '密钥路径和轮询参数'
+check "fallback acceptance no longer unconditionally requires Script Editor" file_not_contains "$fallback_plan" '`usernoted` records one Script Editor notification delivery/presentation for the offline transition'
+check "fallback acceptance names both conditional notification sources" file_contains "$fallback_plan" 'Expected notification source is conditional: `authorized`, `provisional`, or `ephemeral` uses native `com.yxy.gpumonitor`; exact `notificationsNotAllowed` with a non-`denied` current state uses Script Editor compatibility delivery.'
+check "fallback acceptance records the final native result and compatibility limitation" file_contains "$fallback_plan" 'Recorded final live result: native `com.yxy.gpumonitor` delivered the offline notification once without repetition; compatibility was not reproduced in that run.'
 
 if (( failures > 0 )); then
     print -u2 "$failures packaging checks failed"

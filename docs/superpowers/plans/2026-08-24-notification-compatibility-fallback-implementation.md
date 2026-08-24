@@ -870,7 +870,9 @@ Run:
 /usr/bin/log show --style compact --last 2m --predicate 'process == "usernoted" AND (eventMessage CONTAINS "com.apple.ScriptEditor2" OR eventMessage CONTAINS "Presenting")'
 ```
 
-Expected: the installed app starts, port 10122 continues returning seven GPUs, port 10165 reaches confirmed offline after three connectivity failures, and `usernoted` records one Script Editor notification delivery/presentation for the offline transition. Later 15-second polls do not generate repeated offline notifications.
+Expected notification source is conditional: `authorized`, `provisional`, or `ephemeral` uses native `com.yxy.gpumonitor`; exact `notificationsNotAllowed` with a non-`denied` current state uses Script Editor compatibility delivery. In either route, the installed app starts, port 10122 continues returning seven GPUs, port 10165 reaches confirmed offline after three connectivity failures, and later 15-second polls do not generate repeated offline notifications.
+
+Recorded final live result: native `com.yxy.gpumonitor` delivered the offline notification once without repetition; compatibility was not reproduced in that run.
 
 Verify no login item was added:
 
