@@ -58,7 +58,7 @@ public struct MenuContentView: View {
                 ContentUnavailableView(
                     "没有可监控的服务器",
                     systemImage: "server.rack",
-                    description: Text("请检查 servers.json 配置后立即刷新。")
+                    description: Text(AppModel.emptyConfigurationGuidance)
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             } else {
@@ -210,8 +210,10 @@ private struct StatusFooter: View {
                 Spacer()
 
                 Button("退出") {
-                    model.stop()
-                    NSApplication.shared.terminate(nil)
+                    Task { @MainActor in
+                        await model.stop()
+                        NSApplication.shared.terminate(nil)
+                    }
                 }
                 .keyboardShortcut("q")
             }

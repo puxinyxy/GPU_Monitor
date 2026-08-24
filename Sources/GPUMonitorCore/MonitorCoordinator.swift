@@ -61,6 +61,15 @@ public actor MonitorCoordinator {
         return cycle
     }
 
+    public func cancelActivePoll() async {
+        guard let poll = activePoll else { return }
+        poll.task.cancel()
+        _ = await poll.task.value
+        if activePoll?.generation == poll.generation {
+            activePoll = nil
+        }
+    }
+
     private static func runPoll(
         servers: [ServerConfig],
         probe: any GPUProbing,

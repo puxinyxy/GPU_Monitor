@@ -48,6 +48,30 @@ private actor CycleSource {
     }
 }
 
+private actor ControlledCycleSource {
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private(set) var calls = 0
+
+    func poll() async -> MonitorCycle {
+        calls += 1
+        startedWaiter?.resume()
+        startedWaiter = nil
+        await withCheckedContinuation { releaseContinuation = $0 }
+        return cycle(snapshots: [:], health: [server10222.id: .unknown])
+    }
+
+    func waitUntilStarted() async {
+        guard calls == 0 else { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
 private actor ControlledSleeper {
     private var continuations: [CheckedContinuation<Void, Error>] = []
     private(set) var requestedDurations: [Duration] = []
@@ -72,6 +96,112 @@ private actor ControlledSleeper {
         let pending = continuations
         continuations.removeAll()
         pending.forEach { $0.resume(throwing: CancellationError()) }
+    }
+}
+
+private actor ControlledAuthorizationNotifications: NotificationSink, NotificationAuthorizationProviding {
+    private var authorizationStartedWaiter: CheckedContinuation<Void, Never>?
+    private var authorizationRelease: CheckedContinuation<Void, Never>?
+    private var authorizationStarted = false
+
+    func requestAuthorization() async -> NotificationAuthorizationState {
+        authorizationStarted = true
+        authorizationStartedWaiter?.resume()
+        authorizationStartedWaiter = nil
+        await withCheckedContinuation { authorizationRelease = $0 }
+        return .authorized
+    }
+
+    func authorizationState() async -> NotificationAuthorizationState { .notDetermined }
+
+    func send(events: [MonitorEvent]) async -> NotificationDeliveryResult {
+        .init(attemptedCount: 0, deliveredCount: 0, failures: [])
+    }
+
+    func waitUntilAuthorizationStarts() async {
+        guard !authorizationStarted else { return }
+        await withCheckedContinuation { authorizationStartedWaiter = $0 }
+    }
+
+    func releaseAuthorization() {
+        authorizationRelease?.resume()
+        authorizationRelease = nil
+    }
+}
+
+private actor CancellationAwareAuthorizationNotifications: NotificationSink, NotificationAuthorizationProviding {
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var authorizationContinuation: CheckedContinuation<NotificationAuthorizationState, Never>?
+    private var started = false
+    private(set) var observedCancellation = false
+
+    func requestAuthorization() async -> NotificationAuthorizationState {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                authorizationContinuation = continuation
+                started = true
+                startedWaiter?.resume()
+                startedWaiter = nil
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func authorizationState() async -> NotificationAuthorizationState { .notDetermined }
+
+    func send(events: [MonitorEvent]) async -> NotificationDeliveryResult {
+        .init(attemptedCount: 0, deliveredCount: 0, failures: [])
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func cancel() {
+        observedCancellation = true
+        authorizationContinuation?.resume(returning: .error)
+        authorizationContinuation = nil
+    }
+}
+
+private actor CancellationControlledPoll {
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var resultContinuation: CheckedContinuation<MonitorCycle, Never>?
+    private(set) var started = false
+    private(set) var observedCancellation = false
+    private(set) var cancelRequests = 0
+
+    func poll() async -> MonitorCycle {
+        started = true
+        startedWaiter?.resume()
+        startedWaiter = nil
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { resultContinuation = $0 }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func cancel() {
+        observedCancellation = true
+        release()
+    }
+
+    func cancelActivePoll() {
+        cancelRequests += 1
+        cancel()
+    }
+
+    func release() {
+        resultContinuation?.resume(returning: cycle(snapshots: [:], health: [:]))
+        resultContinuation = nil
     }
 }
 
@@ -144,7 +274,39 @@ func startRequestsAuthorizationAndPollsExactlyOnceAcrossRepeatedCalls() async {
     #expect(model.notificationAuthorization == .denied)
     #expect(model.lastUpdated == firstCycle.completedAt)
     #expect(await sleeper.requestedDurations == [.seconds(15)])
-    model.stop()
+    await model.stop()
+}
+
+@Test @MainActor
+func timerDoesNotStartUntilAuthorizationAndInitialRefreshFinish() async {
+    let source = ControlledCycleSource()
+    let notifications = ControlledAuthorizationNotifications()
+    let sleeper = ControlledSleeper()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { await source.poll() },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { try await sleeper.sleep(for: $0) }
+    )
+    let startTask = Task { await model.start() }
+
+    await notifications.waitUntilAuthorizationStarts()
+    for _ in 0..<100 { await Task.yield() }
+    #expect(await source.calls == 0)
+    #expect(await sleeper.requestedDurations.isEmpty)
+
+    await notifications.releaseAuthorization()
+    await source.waitUntilStarted()
+    #expect(await sleeper.requestedDurations.isEmpty)
+    await source.release()
+    await startTask.value
+    for _ in 0..<100 where await sleeper.requestedDurations.isEmpty {
+        await Task.yield()
+    }
+    #expect(await source.calls == 1)
+    #expect(await sleeper.requestedDurations == [.seconds(15)])
+    await model.stop()
 }
 
 @Test @MainActor
@@ -168,7 +330,7 @@ func timerUsesOneFifteenSecondLoopAndStopPreventsAnotherPoll() async {
     }
     #expect(await source.calls == 2)
 
-    model.stop()
+    await model.stop()
     await sleeper.resumeNext()
     await Task.yield()
     #expect(await source.calls == 2)
@@ -271,7 +433,60 @@ func startupConfigurationErrorRemainsVisibleAndMenuUsable() async {
     #expect(model.startupError == "配置读取失败：格式错误")
     #expect(model.notificationAuthorization == .error)
     #expect(model.menuTitle == "GPU —/—")
-    model.stop()
+    await model.stop()
+}
+
+@Test @MainActor
+func stopCancelsAndWaitsForAnActiveRefresh() async {
+    let poll = CancellationControlledPoll()
+    let notifications = FakeNotifications()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { await poll.poll() },
+        cancelPoll: { await poll.cancelActivePoll() },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { _ in throw CancellationError() }
+    )
+    let refreshTask = Task { await model.refresh() }
+    await poll.waitUntilStarted()
+
+    await model.stop()
+
+    #expect(await poll.observedCancellation)
+    #expect(await poll.cancelRequests == 1)
+    #expect(!model.isRefreshing)
+    await poll.release()
+    await refreshTask.value
+}
+
+@Test @MainActor
+func stopCancelsStartupBeforeItCanPollOrInstallTheTimer() async {
+    let source = CycleSource([cycle(snapshots: [:], health: [:])])
+    let notifications = CancellationAwareAuthorizationNotifications()
+    let sleeper = ControlledSleeper()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { await source.poll() },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { try await sleeper.sleep(for: $0) }
+    )
+    let startTask = Task { await model.start() }
+    await notifications.waitUntilStarted()
+
+    await model.stop()
+    await startTask.value
+
+    #expect(await notifications.observedCancellation)
+    #expect(await source.calls == 0)
+    #expect(await sleeper.requestedDurations.isEmpty)
+    #expect(!model.isRefreshing)
+}
+
+@Test @MainActor
+func emptyConfigurationGuidanceRequiresRestart() {
+    #expect(AppModel.emptyConfigurationGuidance == "修复配置后重启应用。")
 }
 
 @Test

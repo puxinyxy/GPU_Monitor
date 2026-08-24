@@ -29,7 +29,18 @@ public enum MenuStatus: Equatable, Sendable {
 @MainActor
 public final class AppModel: ObservableObject {
     public typealias Poll = @Sendable () async -> MonitorCycle
+    public typealias CancelPoll = @Sendable () async -> Void
     public typealias Sleep = @Sendable (Duration) async throws -> Void
+
+    private struct RefreshResult: Sendable {
+        let cycle: MonitorCycle
+        let delivery: NotificationDeliveryResult
+    }
+
+    private struct ActiveRefresh {
+        let generation: UInt64
+        let task: Task<RefreshResult?, Never>
+    }
 
     @Published public private(set) var snapshots: [String: ServerSnapshot] = [:]
     @Published public private(set) var health: [String: ServerHealth] = [:]
@@ -40,18 +51,26 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var recentErrorSummary: String?
 
     public let servers: [ServerConfig]
+    public static let emptyConfigurationGuidance = "修复配置后重启应用。"
 
     private let poll: Poll
+    private let cancelPoll: CancelPoll
     private let notifications: any NotificationSink
     private let authorizationProvider: any NotificationAuthorizationProviding
     private let sleep: Sleep
     private let pollInterval: Duration
+    private var started = false
+    private var lifecycleGeneration: UInt64 = 0
+    private var startupTask: Task<Void, Never>?
     private var loopTask: Task<Void, Never>?
+    private var nextRefreshGeneration: UInt64 = 0
+    private var activeRefresh: ActiveRefresh?
 
     public init(
         servers: [ServerConfig],
         startupError: String? = nil,
         poll: @escaping Poll,
+        cancelPoll: @escaping CancelPoll = {},
         notifications: any NotificationSink,
         authorizationProvider: any NotificationAuthorizationProviding,
         pollInterval: Duration = .seconds(15),
@@ -63,6 +82,7 @@ public final class AppModel: ObservableObject {
         self.startupError = startupError
         self.recentErrorSummary = startupError
         self.poll = poll
+        self.cancelPoll = cancelPoll
         self.notifications = notifications
         self.authorizationProvider = authorizationProvider
         self.pollInterval = pollInterval
@@ -87,49 +107,86 @@ public final class AppModel: ObservableObject {
             servers: servers,
             startupError: startupError,
             poll: { await coordinator.poll() },
+            cancelPoll: { await coordinator.cancelActivePoll() },
             notifications: notificationSink,
             authorizationProvider: notificationSink
         )
     }
 
     public func start() async {
-        guard loopTask == nil else { return }
-
-        loopTask = Task { [weak self, sleep, pollInterval] in
-            while !Task.isCancelled {
-                do {
-                    try await sleep(pollInterval)
-                } catch {
-                    break
-                }
-                guard !Task.isCancelled else { break }
-                await self?.refresh()
-            }
+        guard !started else {
+            if let startupTask { await startupTask.value }
+            return
         }
-
-        notificationAuthorization = await authorizationProvider.requestAuthorization()
-        if notificationAuthorization == .error {
-            recentErrorSummary = "通知授权状态读取失败"
+        started = true
+        lifecycleGeneration &+= 1
+        let generation = lifecycleGeneration
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.runStartup(generation: generation)
         }
-        await refresh()
+        startupTask = task
+
+        await task.value
+        if lifecycleGeneration == generation {
+            startupTask = nil
+        }
     }
 
     public func refresh() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        let refresh: ActiveRefresh
+        if let activeRefresh {
+            refresh = activeRefresh
+        } else {
+            nextRefreshGeneration &+= 1
+            let generation = nextRefreshGeneration
+            let task = Task<RefreshResult?, Never> { [poll, notifications] in
+                guard !Task.isCancelled else { return nil }
+                let cycle = await poll()
+                guard !Task.isCancelled else { return nil }
+                let delivery = await notifications.send(events: cycle.events)
+                guard !Task.isCancelled else { return nil }
+                return RefreshResult(cycle: cycle, delivery: delivery)
+            }
+            refresh = ActiveRefresh(generation: generation, task: task)
+            activeRefresh = refresh
+            isRefreshing = true
+        }
 
-        let cycle = await poll()
-        apply(cycle)
-        let delivery = await notifications.send(events: cycle.events)
-        if delivery.failedCount > 0 {
-            recentErrorSummary = "通知发送失败：\(delivery.failedCount) 条"
+        let result = await refresh.task.value
+        guard activeRefresh?.generation == refresh.generation else { return }
+        activeRefresh = nil
+        isRefreshing = false
+        if let result {
+            apply(result.cycle)
+            if result.delivery.failedCount > 0 {
+                recentErrorSummary = "通知发送失败：\(result.delivery.failedCount) 条"
+            }
         }
     }
 
-    public func stop() {
-        loopTask?.cancel()
+    public func stop() async {
+        started = false
+        lifecycleGeneration &+= 1
+        let startup = startupTask
+        let loop = loopTask
+        let refresh = activeRefresh
+        startupTask = nil
         loopTask = nil
+        startup?.cancel()
+        loop?.cancel()
+        refresh?.task.cancel()
+
+        await cancelPoll()
+        if let refresh {
+            _ = await refresh.task.value
+            if activeRefresh?.generation == refresh.generation {
+                activeRefresh = nil
+                isRefreshing = false
+            }
+        }
+        if let startup { await startup.value }
+        if let loop { await loop.value }
     }
 
     public var menuTitle: String {
@@ -169,6 +226,33 @@ public final class AppModel: ObservableObject {
         apply(cycle)
     }
 
+    private func runStartup(generation: UInt64) async {
+        let authorization = await authorizationProvider.requestAuthorization()
+        guard isActiveLifecycle(generation) else { return }
+        notificationAuthorization = authorization
+        if authorization == .error {
+            recentErrorSummary = "通知授权状态读取失败"
+        }
+
+        await refresh()
+        guard isActiveLifecycle(generation) else { return }
+        loopTask = Task { [weak self, sleep, pollInterval] in
+            while !Task.isCancelled {
+                do {
+                    try await sleep(pollInterval)
+                } catch {
+                    break
+                }
+                guard !Task.isCancelled else { break }
+                await self?.refresh()
+            }
+        }
+    }
+
+    private func isActiveLifecycle(_ generation: UInt64) -> Bool {
+        started && lifecycleGeneration == generation && !Task.isCancelled
+    }
+
     private func apply(_ cycle: MonitorCycle) {
         snapshots.merge(cycle.snapshots) { _, new in new }
         health = cycle.health
@@ -186,6 +270,8 @@ public final class AppModel: ObservableObject {
     }
 
     deinit {
+        startupTask?.cancel()
         loopTask?.cancel()
+        activeRefresh?.task.cancel()
     }
 }

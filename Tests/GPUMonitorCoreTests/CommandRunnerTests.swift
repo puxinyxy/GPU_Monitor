@@ -77,6 +77,42 @@ import GPUMonitorCore
     #expect(errno == ESRCH)
 }
 
+@Test func commandRunnerCancellationForceKillsAndReapsAChildThatIgnoresSIGTERM() async throws {
+    let pidURL = FileManager.default.temporaryDirectory
+        .appending(path: "gpu-monitor-cancel-resistant-\(UUID().uuidString).pid")
+    defer { try? FileManager.default.removeItem(at: pidURL) }
+    let task = Task {
+        try await CommandRunner().run(
+            executable: "/bin/sh",
+            arguments: [
+                "-c",
+                "trap '' TERM; echo $$ > \"\(pidURL.path)\"; exec /bin/sleep 1.5",
+            ],
+            timeout: .seconds(5)
+        )
+    }
+
+    for _ in 0..<500 where !FileManager.default.fileExists(atPath: pidURL.path) {
+        try await ContinuousClock().sleep(for: .milliseconds(1))
+    }
+    #expect(FileManager.default.fileExists(atPath: pidURL.path))
+    let clock = ContinuousClock()
+    let cancelledAt = clock.now
+    task.cancel()
+
+    await #expect(throws: CancellationError.self) {
+        try await task.value
+    }
+
+    #expect(cancelledAt.duration(to: clock.now) < .milliseconds(700))
+    let pidText = try String(contentsOf: pidURL, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let pid = try #require(pid_t(pidText))
+    errno = 0
+    #expect(kill(pid, 0) == -1)
+    #expect(errno == ESRCH)
+}
+
 @Test func commandRunnerDoesNotWaitForDescendantHeldPipes() async throws {
     let clock = ContinuousClock()
     let startedAt = clock.now

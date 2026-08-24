@@ -191,6 +191,38 @@ private actor FlakyProbe: GPUProbing {
     }
 }
 
+private actor CancellationGateProbe: GPUProbing {
+    private var startedWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var releases: [Int: CheckedContinuation<ServerSnapshot, Error>] = [:]
+    private(set) var sampleCount = 0
+    private(set) var cancelledGenerations: [Int] = []
+
+    func sample(server: ServerConfig) async throws -> ServerSnapshot {
+        sampleCount += 1
+        let generation = sampleCount
+        startedWaiters.removeValue(forKey: generation)?.resume()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { releases[generation] = $0 }
+        } onCancel: {
+            Task { await self.cancel(generation) }
+        }
+    }
+
+    func waitUntilStarted(_ generation: Int) async {
+        guard sampleCount < generation else { return }
+        await withCheckedContinuation { startedWaiters[generation] = $0 }
+    }
+
+    func release(_ generation: Int, server: ServerConfig = .server10222) {
+        releases.removeValue(forKey: generation)?.resume(returning: .snapshot(.free, server: server))
+    }
+
+    func cancel(_ generation: Int) {
+        cancelledGenerations.append(generation)
+        releases.removeValue(forKey: generation)?.resume(throwing: CancellationError())
+    }
+}
+
 @Test func pollRunsServersConcurrentlyAndPreservesSuccessfulServer() async {
     let probe = ConcurrentBarrierProbe(results: [
         "server-10222": .success(.snapshot(.free, server: .server10222)),
@@ -223,6 +255,28 @@ private actor FlakyProbe: GPUProbing {
     #expect(await probe.sampleCount == 1)
     #expect(cycles.0.completedAt == cycles.1.completedAt)
     #expect(cycles.0.snapshots == cycles.1.snapshots)
+}
+
+@Test func cancellingActivePollWaitsForProbeAndDoesNotClearANewerGeneration() async {
+    let probe = CancellationGateProbe()
+    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
+    let first = Task { await coordinator.poll() }
+    await probe.waitUntilStarted(1)
+
+    await coordinator.cancelActivePoll()
+    _ = await first.value
+    #expect(await probe.cancelledGenerations == [1])
+
+    let second = Task { await coordinator.poll() }
+    await probe.waitUntilStarted(2)
+    let joiner = Task { await coordinator.poll() }
+    for _ in 0..<100 { await Task.yield() }
+    #expect(await probe.sampleCount == 2)
+    await probe.release(2)
+
+    _ = await second.value
+    _ = await joiner.value
+    #expect(await probe.sampleCount == 2)
 }
 
 @Test func waiterReturningFirstClearsTheCompletedPollBeforeStartingAnother() async {

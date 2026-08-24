@@ -107,6 +107,10 @@ public struct CommandRunner: CommandRunning, Sendable {
             return CommandResult(exitCode: completion.exitCode, stdout: stdout, stderr: stderr)
         } onCancel: {
             processBox.cancel()
+            Task.detached {
+                try? await ContinuousClock().sleep(for: .milliseconds(100))
+                processBox.forceKillAfterCancellation()
+            }
         }
     }
 }
@@ -281,6 +285,19 @@ private final class SynchronizedProcess: @unchecked Sendable {
         defer { lock.unlock() }
 
         guard didTimeOut,
+              state == .running,
+              let process,
+              process.isRunning else {
+            return
+        }
+        _ = Darwin.kill(process.processIdentifier, SIGKILL)
+    }
+
+    func forceKillAfterCancellation() {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard wasCancelled,
               state == .running,
               let process,
               process.isRunning else {
