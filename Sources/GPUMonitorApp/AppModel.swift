@@ -3,6 +3,23 @@ import GPUMonitorCore
 import GPUMonitorNotifications
 import SwiftUI
 
+private actor NotificationDrainCompletion {
+    private var completed = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        guard !completed else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func complete() {
+        guard !completed else { return }
+        completed = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 public enum MenuStatus: Equatable, Sendable {
     case unknown
     case available
@@ -33,6 +50,7 @@ public enum MenuStatus: Equatable, Sendable {
 public final class AppModel: ObservableObject {
     public typealias Poll = @Sendable () async -> MonitorCycle
     public typealias CancelPoll = @Sendable () async -> Void
+    public typealias NotificationDrain = @Sendable () async -> Void
     public typealias Sleep = @Sendable (Duration) async throws -> Void
 
     private struct RefreshResult: Sendable {
@@ -73,6 +91,8 @@ public final class AppModel: ObservableObject {
     private let cancelPoll: CancelPoll
     private let notifications: any NotificationSink
     private let authorizationProvider: any NotificationAuthorizationProviding
+    private let notificationDrain: NotificationDrain
+    private let notificationDrainTimeout: Duration
     private let sleep: Sleep
     private let pollInterval: Duration
     private var lifecycleState: LifecycleState = .idle
@@ -93,6 +113,8 @@ public final class AppModel: ObservableObject {
         cancelPoll: @escaping CancelPoll = {},
         notifications: any NotificationSink,
         authorizationProvider: any NotificationAuthorizationProviding,
+        notificationDrain: @escaping NotificationDrain = {},
+        notificationDrainTimeout: Duration = .seconds(1),
         pollInterval: Duration = .seconds(15),
         sleep: @escaping Sleep = { duration in
             try await ContinuousClock().sleep(for: duration)
@@ -105,6 +127,8 @@ public final class AppModel: ObservableObject {
         self.cancelPoll = cancelPoll
         self.notifications = notifications
         self.authorizationProvider = authorizationProvider
+        self.notificationDrain = notificationDrain
+        self.notificationDrainTimeout = notificationDrainTimeout
         self.pollInterval = pollInterval
         self.sleep = sleep
     }
@@ -129,7 +153,10 @@ public final class AppModel: ObservableObject {
             poll: { await coordinator.poll() },
             cancelPoll: { await coordinator.cancelActivePoll() },
             notifications: notificationSink,
-            authorizationProvider: notificationSink
+            authorizationProvider: notificationSink,
+            notificationDrain: {
+                await notificationSink.cancelAndDrainCompatibilityCommands()
+            }
         )
     }
 
@@ -257,8 +284,16 @@ public final class AppModel: ObservableObject {
         refresh?.task.cancel()
         authorizationRefresh?.task.cancel()
 
-        let shutdown = Task<Void, Never> { [cancelPoll] in
+        let shutdown = Task<Void, Never> {
+            [cancelPoll, notificationDrain, notificationDrainTimeout] in
+            let drainTask = Task {
+                await Self.waitForNotificationDrain(
+                    notificationDrain,
+                    timeout: notificationDrainTimeout
+                )
+            }
             await cancelPoll()
+            await drainTask.value
         }
         shutdownGeneration = generation
         shutdownTask = shutdown
@@ -336,6 +371,29 @@ public final class AppModel: ObservableObject {
 
     private func isActiveLifecycle(_ generation: UInt64) -> Bool {
         lifecycleState == .running && lifecycleGeneration == generation && !Task.isCancelled
+    }
+
+    nonisolated private static func waitForNotificationDrain(
+        _ drain: @escaping NotificationDrain,
+        timeout: Duration
+    ) async {
+        let completion = NotificationDrainCompletion()
+        let drainTask = Task {
+            await drain()
+            await completion.complete()
+        }
+        let timeoutTask = Task {
+            do {
+                try await ContinuousClock().sleep(for: timeout)
+            } catch {
+                return
+            }
+            await completion.complete()
+        }
+
+        await completion.wait()
+        drainTask.cancel()
+        timeoutTask.cancel()
     }
 
     private func completeShutdown(generation: UInt64?) {

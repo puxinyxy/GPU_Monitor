@@ -117,6 +117,8 @@ public actor MacOSNotificationSink: NotificationSink, NotificationAuthorizationP
     private var latestConclusiveAuthorizationRevision: UInt64 = 0
     private var latestInconclusiveAuthorizationRevision: UInt64 = 0
     private var activeAuthorizationOperations: Set<UInt64> = []
+    private var activeCompatibilityCommands: [UUID: Task<Void, Error>] = [:]
+    private var isDrainingCompatibilityCommands = false
     private static let maximumCompatibilityRouteSelections = 3
 
     public init(formatter: NotificationFormatter = NotificationFormatter()) {
@@ -202,6 +204,17 @@ public actor MacOSNotificationSink: NotificationSink, NotificationAuthorizationP
             deliveredCount: messages.count - failures.count,
             failures: failures
         )
+    }
+
+    public func cancelAndDrainCompatibilityCommands() async {
+        isDrainingCompatibilityCommands = true
+        let commands = Array(activeCompatibilityCommands.values)
+        for command in commands {
+            command.cancel()
+        }
+        for command in commands {
+            _ = try? await command.value
+        }
     }
 
     private func beginAuthorizationOperation() -> UInt64 {
@@ -292,7 +305,7 @@ public actor MacOSNotificationSink: NotificationSink, NotificationAuthorizationP
                 return
             case .compatibility:
                 guard compatibilityRouteIsCurrent(route) else { continue }
-                try await compatibility.add(title: message.title, body: message.body)
+                try await deliverCompatibility(message)
                 return
             }
         }
@@ -305,6 +318,25 @@ public actor MacOSNotificationSink: NotificationSink, NotificationAuthorizationP
             deliveryMode == .compatibility &&
             route.revision == authorizationRevision &&
             activeAuthorizationOperations.isEmpty
+    }
+
+    private func deliverCompatibility(_ message: NotificationMessage) async throws {
+        try Task.checkCancellation()
+        guard !isDrainingCompatibilityCommands else { throw CancellationError() }
+
+        let identifier = UUID()
+        let command = Task { [compatibility] in
+            try Task.checkCancellation()
+            try await compatibility.add(title: message.title, body: message.body)
+        }
+        activeCompatibilityCommands[identifier] = command
+        defer { activeCompatibilityCommands.removeValue(forKey: identifier) }
+
+        try await withTaskCancellationHandler {
+            try await command.value
+        } onCancel: {
+            command.cancel()
+        }
     }
 
     private func deliverNative(_ message: NotificationMessage) async throws {

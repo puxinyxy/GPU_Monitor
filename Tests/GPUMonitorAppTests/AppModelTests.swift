@@ -283,6 +283,29 @@ private actor CompletionFlag {
     }
 }
 
+private actor ControlledNotificationDrain {
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var started = false
+
+    func drain() async {
+        started = true
+        startedWaiter?.resume()
+        startedWaiter = nil
+        await withCheckedContinuation { releaseContinuation = $0 }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
 private actor ShutdownGatePoll {
     private var pollStartedWaiter: CheckedContinuation<Void, Never>?
     private var pollContinuation: CheckedContinuation<MonitorCycle, Never>?
@@ -761,6 +784,63 @@ func stopCancelsAndWaitsForAnActiveRefresh() async {
     #expect(!model.isRefreshing)
     await poll.release()
     await refreshTask.value
+}
+
+@Test @MainActor
+func stopWaitsForInjectedProductionNotificationDrain() async {
+    let notifications = FakeNotifications()
+    let drain = ControlledNotificationDrain()
+    let model = AppModel(
+        servers: [server10122],
+        poll: { cycle(snapshots: [:], health: [:]) },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        notificationDrain: { await drain.drain() },
+        notificationDrainTimeout: .seconds(5),
+        sleep: { _ in throw CancellationError() }
+    )
+    let stopped = CompletionFlag()
+    let stopTask = Task {
+        await model.stop()
+        await stopped.markCompleted()
+    }
+
+    await drain.waitUntilStarted()
+    for _ in 0..<100 { await Task.yield() }
+    #expect(!(await stopped.completed))
+
+    await drain.release()
+    await stopTask.value
+    #expect(await stopped.completed)
+}
+
+@Test @MainActor
+func stopBoundsANonCooperativeNotificationDrain() async {
+    let notifications = FakeNotifications()
+    let drain = ControlledNotificationDrain()
+    let model = AppModel(
+        servers: [server10122],
+        poll: { cycle(snapshots: [:], health: [:]) },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        notificationDrain: { await drain.drain() },
+        notificationDrainTimeout: .milliseconds(10),
+        sleep: { _ in throw CancellationError() }
+    )
+    let stopped = CompletionFlag()
+    let stopTask = Task {
+        await model.stop()
+        await stopped.markCompleted()
+    }
+
+    await drain.waitUntilStarted()
+    for _ in 0..<500 where !(await stopped.completed) {
+        try? await ContinuousClock().sleep(for: .milliseconds(1))
+    }
+    #expect(await stopped.completed)
+
+    await drain.release()
+    await stopTask.value
 }
 
 @Test @MainActor

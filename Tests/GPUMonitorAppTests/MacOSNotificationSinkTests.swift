@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 import GPUMonitorCore
 import UserNotifications
@@ -74,6 +75,27 @@ private actor CancellingCompatibilityNotificationClient: CompatibilityNotificati
     func add(title: String, body: String) async throws {
         callCount += 1
         throw CancellationError()
+    }
+}
+
+private actor TermResistantCompatibilityNotificationClient: CompatibilityNotificationClient {
+    private let pidURL: URL
+
+    init(pidURL: URL) {
+        self.pidURL = pidURL
+    }
+
+    func add(title: String, body: String) async throws {
+        _ = try await CommandRunner().run(
+            executable: "/bin/sh",
+            arguments: [
+                "-c",
+                "trap '' TERM; echo $$ > \"$1\"; exec /bin/sleep 5",
+                "gpu-monitor-compatibility-test",
+                pidURL.path,
+            ],
+            timeout: .seconds(10)
+        )
     }
 }
 
@@ -655,4 +677,37 @@ private func notificationsNotAllowedError() -> NSError {
     #expect(result.attemptedCount == 2)
     #expect(result.deliveredCount == 0)
     #expect(result.failures.map(\.messageIndex) == [0, 1])
+}
+
+@Test func compatibilityDrainForceKillsAndReapsActiveCommandBeforeReturning() async throws {
+    let pidURL = FileManager.default.temporaryDirectory
+        .appending(path: "gpu-monitor-compatibility-drain-\(UUID().uuidString).pid")
+    defer { try? FileManager.default.removeItem(at: pidURL) }
+    let center = FakeNotificationCenter(
+        authorizationResult: .failure(notificationsNotAllowedError()),
+        currentState: .notDetermined
+    )
+    let compatibility = TermResistantCompatibilityNotificationClient(pidURL: pidURL)
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+    #expect(await sink.requestAuthorization() == .compatibility)
+    let delivery = Task {
+        await sink.send(events: [.serverRecovered(server: notificationTestServer)])
+    }
+
+    for _ in 0..<1_000 where !FileManager.default.fileExists(atPath: pidURL.path) {
+        try await ContinuousClock().sleep(for: .milliseconds(1))
+    }
+    #expect(FileManager.default.fileExists(atPath: pidURL.path))
+
+    await sink.cancelAndDrainCompatibilityCommands()
+
+    let pidText = try String(contentsOf: pidURL, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let pid = try #require(pid_t(pidText))
+    errno = 0
+    #expect(kill(pid, 0) == -1)
+    #expect(errno == ESRCH)
+    let result = await delivery.value
+    #expect(result.deliveredCount == 0)
+    #expect(result.failures.map(\.messageIndex) == [0])
 }
