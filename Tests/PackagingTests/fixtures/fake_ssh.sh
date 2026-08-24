@@ -43,11 +43,19 @@ done
 
 if (( has_remote_forward )); then
     if [[ "${GPU_MONITOR_TEST_FORWARD_UNRELATED_FAILURE:-0}" == "1" ]]; then
-        print -u2 'ssh: connect to host 122.207.108.8 port 10122: Connection refused'
+        if [[ "${GPU_MONITOR_TEST_FORWARD_CRLF:-0}" == "1" ]]; then
+            /usr/bin/printf 'ssh: connect to host 122.207.108.8 port 10122: Connection refused\r\n' >&2
+        else
+            print -u2 'ssh: connect to host 122.207.108.8 port 10122: Connection refused'
+        fi
         exit 255
     fi
     [[ "${GPU_MONITOR_TEST_FORWARD_ALLOWED:-0}" == "1" ]] && exit 0
-    print -u2 'Error: remote port forwarding failed for listen port 0'
+    if [[ "${GPU_MONITOR_TEST_FORWARD_CRLF:-0}" == "1" ]]; then
+        /usr/bin/printf 'Error: remote port forwarding failed for listen port 0\r\n' >&2
+    else
+        print -u2 'Error: remote port forwarding failed for listen port 0'
+    fi
     exit 255
 fi
 

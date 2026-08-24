@@ -134,6 +134,7 @@ run_provisioner() {
         GPU_MONITOR_TEST_FORCED_OUTPUT="${forced_output:-${monitor_output:-$valid_output}}" \
         GPU_MONITOR_TEST_FORWARD_ALLOWED="${forward_allowed:-0}" \
         GPU_MONITOR_TEST_FORWARD_UNRELATED_FAILURE="${forward_unrelated_failure:-0}" \
+        GPU_MONITOR_TEST_FORWARD_CRLF="${forward_crlf:-0}" \
         "$provisioner" >"$stdout_log" 2>"$stderr_log"
 }
 
@@ -361,6 +362,25 @@ else
     record_pass "successful remote forwarding fails provisioning"
 fi
 unset forward_allowed
+
+new_case forwarding_rejected_crlf
+forward_crlf=1
+if run_provisioner; then
+    record_pass "exact forwarding rejection with CRLF is accepted"
+else
+    record_failure "exact forwarding rejection with CRLF is accepted"
+fi
+unset forward_crlf
+
+new_case forwarding_unrelated_crlf
+forward_crlf=1
+forward_unrelated_failure=1
+if run_provisioner; then
+    record_failure "unrelated forwarding failure with CRLF fails closed"
+else
+    record_pass "unrelated forwarding failure with CRLF fails closed"
+fi
+unset forward_unrelated_failure forward_crlf
 
 new_case forwarding_unrelated_failure
 forward_unrelated_failure=1
