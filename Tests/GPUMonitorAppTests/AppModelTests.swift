@@ -554,6 +554,20 @@ func summaryAndColorRepresentUnknownWarningOfflineFreeAndBusyStates() async {
 
     model.applyForTesting(cycle(
         snapshots: [:],
+        health: [server10222.id: .warning(message: "authentication failed"), server10165.id: .online]
+    ))
+    #expect(model.menuStatus == .warning)
+    #expect(model.recentErrorSummary == "服务器 10222：authentication failed")
+
+    model.applyForTesting(cycle(
+        snapshots: [:],
+        health: [server10222.id: .security(message: "host key mismatch"), server10165.id: .online]
+    ))
+    #expect(model.menuStatus == .security)
+    #expect(model.recentErrorSummary == "服务器 10222：host key mismatch")
+
+    model.applyForTesting(cycle(
+        snapshots: [:],
         health: [server10222.id: .offline(message: "unreachable"), server10165.id: .online]
     ))
     #expect(model.menuStatus == .offline)
@@ -827,11 +841,15 @@ func gpuDisplayIncludesOccupancyMetricsMemoryTemperatureAndFirstProcess() {
 }
 
 @Test
-func serverDisplayDistinguishesUnknownOnlineShortFailureAndOffline() {
+func serverDisplayDistinguishesUnknownOnlineConnectivityWarningSecurityAndOffline() {
     #expect(ServerHealthDisplay(.unknown).label == "未知")
     #expect(ServerHealthDisplay(.online).label == "在线")
     #expect(ServerHealthDisplay(.degraded(message: "SSH connection timed out", consecutiveFailures: 2)).label == "查询失败（2/3）")
     #expect(ServerHealthDisplay(.degraded(message: "SSH connection timed out", consecutiveFailures: 2)).detail == "SSH connection timed out")
+    #expect(ServerHealthDisplay(.warning(message: "Public-key authentication failed")).label == "查询警告")
+    #expect(ServerHealthDisplay(.warning(message: "Public-key authentication failed")).detail == "Public-key authentication failed")
+    #expect(ServerHealthDisplay(.security(message: "Host key verification failed")).label == "安全错误")
+    #expect(ServerHealthDisplay(.security(message: "Host key verification failed")).detail == "Host key verification failed")
     #expect(ServerHealthDisplay(.offline(message: "Host unreachable")).label == "离线")
     #expect(ServerHealthDisplay(.offline(message: "Host unreachable")).detail == "Host unreachable")
 }

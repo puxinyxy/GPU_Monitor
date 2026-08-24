@@ -36,6 +36,12 @@ struct ServerHealthDisplay: Equatable, Sendable {
         case let .degraded(message, consecutiveFailures):
             label = "查询失败（\(consecutiveFailures)/3）"
             detail = message
+        case let .warning(message):
+            label = "查询警告"
+            detail = message
+        case let .security(message):
+            label = "安全错误"
+            detail = message
         case let .offline(message):
             label = "离线"
             detail = message
@@ -122,6 +128,8 @@ private struct ServerSection: View {
         case .unknown: .secondary
         case .online: .green
         case .degraded: .yellow
+        case .warning: .yellow
+        case .security: .red
         case .offline: .red
         }
     }
@@ -131,6 +139,8 @@ private struct ServerSection: View {
         case .unknown: "等待首次采样"
         case .online: "在线，但尚无 GPU 数据"
         case .degraded: "查询失败，尚无可保留的快照"
+        case .warning: "查询警告，尚无可保留的快照"
+        case .security: "SSH 安全校验失败，尚无可保留的快照"
         case .offline: "服务器离线，尚无可保留的快照"
         }
     }
@@ -140,6 +150,8 @@ private struct ServerSection: View {
         case .unknown: "questionmark.circle"
         case .online: "checkmark.circle"
         case .degraded: "exclamationmark.triangle"
+        case .warning: "exclamationmark.triangle"
+        case .security: "lock.trianglebadge.exclamationmark"
         case .offline: "wifi.slash"
         }
     }

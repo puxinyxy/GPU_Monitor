@@ -5,7 +5,7 @@ import Testing
 extension ControlledProbe: GPUProbing {
     func sample(server: ServerConfig) async throws -> ServerSnapshot {
         try await ContinuousClock().sleep(for: delay)
-        return try results[server.id, default: .failure(TestError.unreachable)].get()
+        return try results[server.id, default: .failure(ProbeFailure.connectivity)].get()
     }
 }
 
@@ -30,7 +30,7 @@ private actor ConcurrentBarrierProbe: GPUProbing {
         }
 
         activeSampleCount -= 1
-        return try results[server.id, default: .failure(TestError.unreachable)].get()
+        return try results[server.id, default: .failure(ProbeFailure.connectivity)].get()
     }
 
     func releaseBlockedSample() {
@@ -209,7 +209,7 @@ private actor FlakyProbe: GPUProbing {
 
     func sample(server: ServerConfig) async throws -> ServerSnapshot {
         sampleCount += 1
-        guard sampleCount == 1 else { throw TestError.unreachable }
+        guard sampleCount == 1 else { throw ProbeFailure.connectivity }
         return .snapshot(.free, server: server)
     }
 }
@@ -266,7 +266,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
 
     func sample(server: ServerConfig) async throws -> ServerSnapshot {
         sampleCount += 1
-        guard sampleCount == 1 else { throw TestError.unreachable }
+        guard sampleCount == 1 else { throw ProbeFailure.connectivity }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 firstContinuation = continuation
@@ -292,7 +292,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
 @Test func pollRunsServersConcurrentlyAndPreservesSuccessfulServer() async {
     let probe = ConcurrentBarrierProbe(results: [
         "server-10222": .success(.snapshot(.free, server: .server10222)),
-        "server-10165": .failure(TestError.unreachable),
+        "server-10165": .failure(ProbeFailure.connectivity),
     ])
     let coordinator = MonitorCoordinator(servers: [.server10222, .server10165], probe: probe)
     let deadlockGuard = Task {
@@ -412,7 +412,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
 
     #expect(await probe.sampleCount == 2)
     #expect(failedCycle.health[ServerConfig.server10222.id] == .degraded(
-        message: TestError.unreachable.localizedDescription,
+        message: ProbeFailure.connectivity.localizedDescription,
         consecutiveFailures: 1
     ))
 }
@@ -513,8 +513,33 @@ private actor CancellationThenFailureProbe: GPUProbing {
 
     #expect(failedCycle.snapshots["server-10222"] == successfulCycle.snapshots["server-10222"])
     #expect(failedCycle.health["server-10222"] == .degraded(
-        message: TestError.unreachable.localizedDescription,
+        message: ProbeFailure.connectivity.localizedDescription,
         consecutiveFailures: 1
     ))
     #expect(failedCycle.events.isEmpty)
+}
+
+@Test func coordinatorPreservesStructuredNonConnectivityFailureHealth() async {
+    let authenticationProbe = ControlledProbe(
+        results: ["server-10222": .failure(ProbeFailure.authentication)],
+        delay: .zero
+    )
+    let securityProbe = ControlledProbe(
+        results: ["server-10222": .failure(ProbeFailure.hostKeySecurity)],
+        delay: .zero
+    )
+    let authenticationCoordinator = MonitorCoordinator(servers: [.server10222], probe: authenticationProbe)
+    let securityCoordinator = MonitorCoordinator(servers: [.server10222], probe: securityProbe)
+
+    let authentication = await authenticationCoordinator.poll()
+    let security = await securityCoordinator.poll()
+
+    #expect(authentication.health["server-10222"] == .warning(
+        message: ProbeFailure.authentication.localizedDescription
+    ))
+    #expect(security.health["server-10222"] == .security(
+        message: ProbeFailure.hostKeySecurity.localizedDescription
+    ))
+    #expect(authentication.events.isEmpty)
+    #expect(security.events.isEmpty)
 }

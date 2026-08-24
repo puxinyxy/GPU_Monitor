@@ -14,7 +14,7 @@
 - Poll both servers concurrently every 15 seconds; SSH query timeout is 8 seconds.
 - A GPU is free only when its UUID has no compute process in `nvidia-smi --query-compute-apps` output.
 - Confirm a GPU state only after two consecutive identical observations; the first successful sample is a silent baseline.
-- Notify once after three consecutive server failures and once after recovery; never turn stale GPUs into free GPUs on connection failure.
+- Notify once after three consecutive connectivity failures and once after successful recovery; host-key, authentication, remote-command, invalid-response, and local-launch failures never count toward offline.
 - Store no password in source, configuration, logs, shell scripts, or the app bundle.
 - Do not add login-item or launch-at-login behavior.
 - Use a dedicated no-passphrase Ed25519 key whose remote authorization forces the fixed GPU query and disables forwarding and PTY allocation.
@@ -200,6 +200,8 @@ public enum ServerHealth: Equatable, Sendable {
     case unknown
     case online
     case degraded(message: String, consecutiveFailures: Int)
+    case warning(message: String)
+    case security(message: String)
     case offline(message: String)
 }
 
@@ -290,7 +292,7 @@ public struct NVIDIAOutputParser: Sendable {
 }
 ```
 
-Trim every CSV field. GPU rows require exactly seven fields and numeric index/utilization/memory/temperature. Process rows require exactly four fields; an empty process section and the literal `No running processes found` both mean no processes. Any malformed non-empty row fails the whole sample.
+Trim every CSV field. GPU rows require exactly seven fields, non-empty UUID/name, unique UUID/index, and numeric index/utilization/memory/temperature. Process rows require exactly four fields, non-empty GPU UUID/name, and a GPU UUID present in the GPU section; an empty process section and the literal `No running processes found` both mean no processes. Any malformed non-empty row fails the whole sample.
 
 - [ ] **Step 4: Run parser tests and the full suite**
 
@@ -315,7 +317,7 @@ git commit -m "feat: parse NVIDIA GPU and process snapshots"
 
 **Interfaces:**
 - Consumes: `ServerConfig`, `ServerSnapshot`, `GPUOccupancy`, `MonitorEvent`, `ServerHealth`.
-- Produces: actor methods `recordSuccess(_:) -> StateUpdate` and `recordFailure(server:message:) -> StateUpdate`.
+- Produces: actor methods `recordSuccess(_:) -> StateUpdate` and `recordFailure(server:failure:) -> StateUpdate`.
 
 - [ ] **Step 1: Write state transition tests**
 
@@ -331,10 +333,10 @@ git commit -m "feat: parse NVIDIA GPU and process snapshots"
 @Test func threeFailuresNotifyOnceAndRecoveryRebaselinesWithoutGPUChange() async {
     let tracker = StateTracker(confirmationCount: 2, offlineFailureCount: 3)
     _ = await tracker.recordSuccess(.snapshot(.free))
-    #expect(await tracker.recordFailure(server: .fixture, message: "timeout").events.isEmpty)
-    #expect(await tracker.recordFailure(server: .fixture, message: "timeout").events.isEmpty)
-    #expect(await tracker.recordFailure(server: .fixture, message: "timeout").events ==
-            [.serverOffline(server: .fixture, message: "timeout")])
+    #expect(await tracker.recordFailure(server: .fixture, failure: .connectivity).events.isEmpty)
+    #expect(await tracker.recordFailure(server: .fixture, failure: .connectivity).events.isEmpty)
+    #expect(await tracker.recordFailure(server: .fixture, failure: .connectivity).events ==
+            [.serverOffline(server: .fixture, message: ProbeFailure.connectivity.localizedDescription)])
     #expect(await tracker.recordSuccess(.snapshot(.busy)).events ==
             [.serverRecovered(server: .fixture)])
 }
@@ -357,13 +359,13 @@ public struct StateUpdate: Equatable, Sendable {
 
 public actor StateTracker {
     private struct GPURecord {
-        var stable: GPUOccupancy
+        var confirmed: GPUSnapshot
         var candidate: GPUOccupancy?
         var candidateCount = 0
     }
     private struct ServerRecord {
-        var failures = 0
-        var offline = false
+        var connectivityFailures = 0
+        var connectivityOffline = false
         var lastSnapshot: ServerSnapshot?
         var gpus: [String: GPURecord] = [:]
     }
@@ -371,7 +373,7 @@ public actor StateTracker {
 }
 ```
 
-On a normal recovery from one or two failures, retain GPU confirmation history. On recovery after a confirmed offline state, emit only `.serverRecovered`, replace all GPU baselines with the recovered snapshot, and suppress stale GPU-change events.
+Only consecutive `.connectivity` failures advance the offline threshold. Host-key failures become security health; authentication, remote-command, invalid-response, and local-launch failures become warning health and reset connectivity accumulation. A first opposite candidate leaves `stableSnapshot` unchanged; confirmed observations refresh the stored full GPU metrics/processes. On recovery after a confirmed offline state, emit only `.serverRecovered`, defensively unique direct-input UUIDs, replace all GPU baselines with the recovered snapshot, and suppress stale GPU-change events.
 
 - [ ] **Step 4: Run transition tests and the full suite**
 
@@ -462,21 +464,27 @@ Construct exactly these arguments before the `user@host` destination:
 
 ```swift
 [
-    "-T", "-i", expandedIdentityPath,
+    "-T", "-F", "/dev/null", "-i", expandedIdentityPath,
     "-p", String(server.port),
     "-o", "BatchMode=yes",
+    "-o", "IdentitiesOnly=yes",
+    "-o", "PreferredAuthentications=publickey",
+    "-o", "PasswordAuthentication=no",
+    "-o", "KbdInteractiveAuthentication=no",
     "-o", "ConnectionAttempts=1",
     "-o", "ConnectTimeout=8",
     "-o", "ServerAliveInterval=5",
     "-o", "ServerAliveCountMax=1",
     "-o", "StrictHostKeyChecking=yes",
     "-o", "UserKnownHostsFile=\(knownHostsURL.path)",
+    "-o", "GlobalKnownHostsFile=/dev/null",
+    "-o", "ClearAllForwardings=yes",
     "-o", "LogLevel=ERROR",
     "\(server.username)@\(server.host)"
 ]
 ```
 
-Pass `.seconds(8)` to the runner, parse stdout with `NVIDIAOutputParser`, and map command/parse failures to user-readable errors without including credentials.
+Pass `.seconds(8)` to the runner, parse stdout with `NVIDIAOutputParser`, and map failures to the sanitized `ProbeFailure` cases connectivity, host-key/security, authentication, remote-command, invalid-response, and local-launch. Fixed user-readable messages must not include stderr, host, user, identity path, or credentials. OpenSSH `Network is unreachable` and `Connection refused` diagnostics are connectivity.
 
 - [ ] **Step 6: Run focused and full tests**
 
@@ -782,8 +790,10 @@ The script creates `~/.ssh/gpu_monitor_ed25519` if absent, creates the dedicated
 Build an authorized-key line with the public key and these restrictions:
 
 ```text
-no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; printf '\n__GPU_MONITOR_PROCESSES__\n'; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits || true"
+no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\n__GPU_MONITOR_PROCESSES__\n' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits"
 ```
+
+The two queries and marker are chained with `&&`: a nonzero GPU or compute query makes the SSH sample fail. The offline behavior harness must cover each nonzero query independently, plus the successful empty compute-output case.
 
 Append only when the public-key blob is absent. After installation, run a `BatchMode=yes` sample and a second attempt containing `echo SHOULD_NOT_RUN`; fail provisioning if the latter text appears, proving the forced command prevented the requested shell command.
 

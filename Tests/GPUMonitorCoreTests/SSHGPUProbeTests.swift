@@ -45,15 +45,23 @@ private actor ProbeRecordingRunner: CommandRunning {
     #expect(call.executable == "/usr/bin/ssh")
     #expect(call.timeout == .seconds(8))
     #expect(call.arguments == [
-        "-T", "-i", "/tmp/gpu_monitor_ed25519",
+        "-T",
+        "-F", "/dev/null",
+        "-i", "/tmp/gpu_monitor_ed25519",
         "-p", "10222",
         "-o", "BatchMode=yes",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "PreferredAuthentications=publickey",
+        "-o", "PasswordAuthentication=no",
+        "-o", "KbdInteractiveAuthentication=no",
         "-o", "ConnectionAttempts=1",
         "-o", "ConnectTimeout=8",
         "-o", "ServerAliveInterval=5",
         "-o", "ServerAliveCountMax=1",
         "-o", "StrictHostKeyChecking=yes",
         "-o", "UserKnownHostsFile=/tmp/known_hosts",
+        "-o", "GlobalKnownHostsFile=/dev/null",
+        "-o", "ClearAllForwardings=yes",
         "-o", "LogLevel=ERROR",
         "yanxiaoyang@122.207.108.8",
     ])
@@ -73,27 +81,58 @@ private actor ProbeRecordingRunner: CommandRunning {
     _ = try await probe.sample(server: server)
 
     let call = await runner.onlyCall
-    #expect(call.arguments[2] == FileManager.default.homeDirectoryForCurrentUser
+    #expect(call.arguments[4] == FileManager.default.homeDirectoryForCurrentUser
         .appending(path: ".ssh/gpu_monitor_ed25519").path)
 }
 
-@Test func probeMapsCommandFailuresWithoutLeakingCredentials() async {
-    let secret = "super-secret-password"
-    let runner = ProbeRecordingRunner(
-        error: CommandError.nonZeroExit(code: 255, stderr: "permission denied: \(secret)")
-    )
-    let probe = SSHGPUProbe(
-        runner: runner,
-        knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts")
-    )
+@Test(arguments: [
+    "ssh: connect to host private.example port 22: Network is unreachable",
+    "ssh: connect to host private.example port 22: Connection refused",
+])
+func probeClassifiesRealOpenSSHConnectivityDiagnostics(_ stderr: String) async {
+    let runner = ProbeRecordingRunner(error: CommandError.nonZeroExit(code: 255, stderr: stderr))
+    let probe = SSHGPUProbe(runner: runner, knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts"))
+
+    await #expect(throws: ProbeFailure.connectivity) {
+        try await probe.sample(server: .fixture)
+    }
+}
+
+@Test(arguments: [
+    ("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED for private.example", ProbeFailure.hostKeySecurity),
+    ("tester@private.example: Permission denied (publickey). secret-token", ProbeFailure.authentication),
+    ("nvidia-smi: command not found on private.example", ProbeFailure.remoteCommand),
+])
+func probeClassifiesAndRedactsNonzeroSSHFailures(_ stderr: String, _ expected: ProbeFailure) async {
+    let runner = ProbeRecordingRunner(error: CommandError.nonZeroExit(code: 255, stderr: stderr))
+    let probe = SSHGPUProbe(runner: runner, knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts"))
 
     do {
         _ = try await probe.sample(server: .fixture)
         Issue.record("Expected the probe to fail")
     } catch {
-        #expect(error as? GPUProbeError == .connectionFailed(exitCode: 255))
-        #expect(!error.localizedDescription.contains(secret))
-        #expect(!error.localizedDescription.contains(ServerConfig.fixture.identityFile))
+        #expect(error as? ProbeFailure == expected)
+        for sensitiveValue in ["private.example", "tester", "secret-token", ServerConfig.fixture.identityFile] {
+            #expect(!error.localizedDescription.contains(sensitiveValue))
+        }
+    }
+}
+
+@Test func probeClassifiesTimeoutAndLocalLaunchSeparately() async {
+    let timedOut = SSHGPUProbe(
+        runner: ProbeRecordingRunner(error: CommandError.timedOut),
+        knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts")
+    )
+    let localLaunch = SSHGPUProbe(
+        runner: ProbeRecordingRunner(error: ProbeRunnerError.localLaunch),
+        knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts")
+    )
+
+    await #expect(throws: ProbeFailure.connectivity) {
+        try await timedOut.sample(server: .fixture)
+    }
+    await #expect(throws: ProbeFailure.localLaunch) {
+        try await localLaunch.sample(server: .fixture)
     }
 }
 
@@ -104,7 +143,11 @@ private actor ProbeRecordingRunner: CommandRunning {
         knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts")
     )
 
-    await #expect(throws: GPUProbeError.invalidResponse) {
+    await #expect(throws: ProbeFailure.invalidResponse) {
         try await probe.sample(server: .fixture)
     }
+}
+
+private enum ProbeRunnerError: Error {
+    case localLaunch
 }

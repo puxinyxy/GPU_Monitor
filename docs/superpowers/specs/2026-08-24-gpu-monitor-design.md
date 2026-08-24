@@ -47,18 +47,21 @@ GPU 0  空闲       0%     80 MiB / 24 GiB   33°C
 本地应用通过 `/usr/bin/ssh` 使用以下安全选项：
 
 - `BatchMode=yes`
-- 独立身份密钥
-- 独立并固定的 `known_hosts`
+- `-F /dev/null`，完全忽略用户和系统 SSH 配置
+- 独立身份密钥，并设置 `IdentitiesOnly=yes`
+- 仅允许公钥认证：`PreferredAuthentications=publickey`、`PasswordAuthentication=no`、`KbdInteractiveAuthentication=no`
+- 独立并固定的 `known_hosts`；`GlobalKnownHostsFile=/dev/null`
+- `ClearAllForwardings=yes`，禁止本地、远端、动态和配置继承的转发
 - 8 秒连接超时
 - 禁止交互式密码回退
 
-远端受限密钥只允许执行固定的 GPU 查询，输出分为 GPU 清单和计算进程清单两段：
+远端受限密钥只允许执行以下固定命令，输出分为 GPU 清单和计算进程清单两段：
 
-```text
-nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits
-__GPU_MONITOR_PROCESSES__
-nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits
+```sh
+nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\n__GPU_MONITOR_PROCESSES__\n' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits
 ```
+
+两次 `nvidia-smi` 与 marker 必须用 `&&` 串联，任一查询非零都会使 SSH 采样整体失败；不得用 `|| true` 掩盖 compute query 失败。compute query 成功但没有进程时可以没有进程行，此时所有 GPU 正常判为空闲。
 
 解析器将计算进程按 GPU UUID 关联到对应 GPU。没有计算进程时，该 GPU 的原始状态为“空闲”；存在一个或多个计算进程时为“占用”。利用率、显存和温度只用于展示，不参与空闲判断。
 
@@ -70,9 +73,9 @@ nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --form
 - `free`
 - `busy`
 
-首次成功采样直接建立基准，不发送状态变化通知。此后某个候选状态必须连续出现两次才成为稳定状态。15 秒轮询下，正常变化会在约 15–30 秒内确认。
+首次成功采样直接建立基准，不发送状态变化通知。每个 GPU 记录完整的 confirmed GPU（占用状态、指标和进程），`ServerSnapshot` 只由 confirmed GPU 组合。此后某个候选状态必须连续出现两次才成为稳定状态；第一次相反候选不得改变稳定快照或 UI 占用。与 confirmed 占用一致的成功观察可以刷新指标和进程。15 秒轮询下，正常变化会在约 15–30 秒内确认，失败采样继续保留 confirmed snapshot。
 
-服务器连接失败时保留最后一次成功的 GPU 快照，不把旧 GPU 自动判为空闲。单次失败只在界面显示警告；连续三次失败后将服务器标记为离线并发送一次通知。下一次成功查询后发送一次恢复通知。
+probe 失败保留脱敏的结构化分类：connectivity、host-key/security、authentication、remote-command、invalid-response 和 local-launch。只有连续 connectivity 失败才累计；连续三次后将服务器标记为离线并发送一次通知，真实的 `Network is unreachable` 与 `Connection refused` 都属于 connectivity。其余分类会中断 connectivity 连续计数：主机密钥失败显示独立安全错误，认证、远端命令、无效响应和本地启动失败显示独立查询警告，绝不触发离线通知。下一次成功查询后才发送一次恢复通知。任何错误文案都不得包含主机、用户、私钥路径或远端 stderr 中的秘密。
 
 ### 4.3 `Notifier`
 
@@ -98,8 +101,9 @@ nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --form
 
 - 绿色：所有服务器在线，至少有空闲 GPU
 - 橙色：所有服务器在线，但全部 GPU 被占用
-- 黄色：存在短暂查询失败，尚未达到离线阈值
-- 红色：至少一台服务器已确认离线
+- 黄色：存在短暂 connectivity 失败或非安全查询警告
+- 红色安全图标：存在主机密钥安全错误
+- 红色离线图标：至少一台服务器已确认离线
 - 灰色：尚未取得首次成功结果
 
 “立即刷新”会触发一次并行采样；若已有采样正在执行，则复用当前任务，避免并发重复查询。
@@ -138,9 +142,11 @@ nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --form
 
 ## 7. 错误处理
 
-- SSH 超时、DNS/路由失败、认证失败：保留旧状态并累计服务器失败次数。
-- `nvidia-smi` 不存在或返回非零：显示明确错误，不把服务器当作无 GPU。
+- SSH 超时、DNS/路由失败、`Network is unreachable`、`Connection refused`：保留旧状态，只累计连续 connectivity 失败。
+- 主机密钥、认证、远端命令、无效响应和本地 SSH 启动错误：保留旧状态，显示各自的 warning/security health，并中断 connectivity 连续计数。
+- `nvidia-smi` 不存在或任一查询返回非零：SSH 采样整体失败并显示远端命令警告，不把服务器当作无 GPU。
 - 单行 GPU 数据格式错误：本次服务器采样整体失败，避免产生部分状态误报。
+- GPU UUID/名称、进程 GPU UUID/名称不得为空；GPU UUID 与 index 不得重复；进程 GPU UUID 必须引用本次 GPU 清单。
 - 无计算进程输出：正常解析为所有 GPU 空闲。
 - 通知权限被拒绝：菜单栏继续工作，并在面板显示“通知未授权”。
 - 应用退出：取消定时器和正在运行的 SSH 子进程。
@@ -155,9 +161,12 @@ nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --form
 - 按 GPU UUID 正确关联进程。
 - 首次采样不通知。
 - 连续两次相同候选状态才确认变化。
+- 单次候选和抖动不改变 confirmed snapshot；稳定观察可以刷新指标和进程。
 - 抖动序列不会产生错误通知。
 - 同一服务器的多卡变化合并通知。
 - 连续三次连接失败触发一次离线事件，恢复后触发一次在线事件。
+- 非 connectivity 失败不会累计或触发离线；主机密钥失败显示安全 health。
+- GPU/compute query 非零的离线 command harness 都验证整体命令非零；成功的空进程输出仍视为正常空闲。
 
 ### 集成测试
 

@@ -20,11 +20,14 @@ swift run GPUMonitorCoreTestsRunner
 
 - 绿色：全部服务器在线，且至少一张 GPU 空闲。
 - 橙色：全部服务器在线，但所有 GPU 均被计算进程占用。
-- 黄色：至少一台服务器暂时查询失败，尚未达到连续三次失败的离线阈值；界面保留最后一次成功快照。
-- 红色：至少一台服务器已连续三次查询失败并确认离线。
+- 黄色：至少一台服务器发生短暂连接失败，或存在认证、远端查询、响应解析、本地 SSH 启动警告；界面保留 confirmed snapshot。
+- 红色安全图标：SSH 主机密钥校验失败；不会累计为服务器离线。
+- 红色离线图标：至少一台服务器已连续三次发生 connectivity 失败并确认离线。
 - 灰色：启动后尚未取得首次成功采样。
 
-GPU 的空闲/占用由是否存在计算进程判断。利用率、显存和温度只用于展示。首次成功采样仅建立基准；候选状态连续出现两次后才会触发变化通知。
+GPU 的空闲/占用由是否存在计算进程判断。利用率、显存和温度只用于展示。首次成功采样仅建立基准；第一次相反候选不会改变 UI 的 confirmed 占用，连续第二次才更新并触发通知。与 confirmed 占用一致的观察仍会刷新指标和进程。
+
+失败分为 connectivity、host-key/security、authentication、remote-command、invalid-response 和 local-launch。只有连续 connectivity 失败才计入三次离线阈值；`Network is unreachable` 与 `Connection refused` 属于 connectivity。其他失败会中断该连续计数并显示独立 warning/security 状态，错误摘要不会回显主机、用户名、密钥路径或 SSH stderr 中的秘密。
 
 ## 配置与服务器编辑
 
@@ -46,7 +49,13 @@ GPU 的空闲/占用由是否存在计算进程判断。利用率、显存和温
 
 应用只在内存中保留最近一次 GPU 快照，不保存长期 GPU 使用历史。查询结果可能包含 GPU 型号、利用率、显存、温度、进程名和 PID；这些数据只在本机界面和通知中使用。日志只记录服务器标识、错误类别和状态变化，不应包含密码、私钥或认证令牌。
 
-专用私钥为 `~/.ssh/gpu_monitor_ed25519`，权限为 `0600`。远端 `authorized_keys` 条目禁止 Agent/X11/端口转发、PTY 和用户 rc，并强制执行固定的只读 `nvidia-smi` 查询。配置脚本会实际请求 `echo SHOULD_NOT_RUN`，只有确认该文本未执行且仍返回监控数据时才成功。
+专用私钥为 `~/.ssh/gpu_monitor_ed25519`，权限为 `0600`。应用忽略用户 SSH 配置，只使用该身份和专用 `known_hosts`，只允许公钥认证，并清除全部转发。远端 `authorized_keys` 条目禁止 Agent/X11/端口转发、PTY 和用户 rc，并强制执行以下固定只读命令：
+
+```sh
+nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\n__GPU_MONITOR_PROCESSES__\n' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits
+```
+
+两条查询与 marker 用 `&&` 串联，任一查询非零都会使采样失败；成功但没有计算进程输出仍是正常的空闲状态。配置脚本会实际请求 `echo SHOULD_NOT_RUN`，只有确认该文本未执行且仍返回监控数据时才成功。
 
 ## 卸载
 

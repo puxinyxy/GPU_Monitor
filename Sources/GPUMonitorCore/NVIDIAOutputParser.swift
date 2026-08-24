@@ -5,6 +5,8 @@ public enum NVIDIAParseError: Error, Equatable, Sendable {
     case noGPUs
     case malformedGPU
     case malformedProcess
+    case duplicateGPU
+    case orphanProcess
 }
 
 public struct NVIDIAOutputParser: Sendable {
@@ -17,14 +19,24 @@ public struct NVIDIAOutputParser: Sendable {
         guard sections.count == 2 else { throw NVIDIAParseError.missingMarker }
 
         let processes = try parseProcesses(sections[1])
-        let gpus = try sections[0]
-            .split(whereSeparator: \.isNewline)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .map { try parseGPU(String($0), processesByUUID: processes) }
-            .sorted { $0.index < $1.index }
+        var seenUUIDs: Set<String> = []
+        var seenIndices: Set<Int> = []
+        var gpus: [GPUSnapshot] = []
+        for line in sections[0].split(whereSeparator: \.isNewline) {
+            guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let gpu = try parseGPU(String(line), processesByUUID: processes)
+            guard seenUUIDs.insert(gpu.uuid).inserted,
+                  seenIndices.insert(gpu.index).inserted else {
+                throw NVIDIAParseError.duplicateGPU
+            }
+            gpus.append(gpu)
+        }
 
         guard !gpus.isEmpty else { throw NVIDIAParseError.noGPUs }
-        return ServerSnapshot(server: server, gpus: gpus, capturedAt: capturedAt)
+        guard Set(processes.keys).isSubset(of: seenUUIDs) else {
+            throw NVIDIAParseError.orphanProcess
+        }
+        return ServerSnapshot(server: server, gpus: gpus.sorted { $0.index < $1.index }, capturedAt: capturedAt)
     }
 
     private func parseProcesses(_ section: String) throws -> [String: [GPUProcessInfo]] {
@@ -40,6 +52,8 @@ public struct NVIDIAOutputParser: Sendable {
 
             let fields = csvFields(String(trimmedLine))
             guard fields.count == 4,
+                  !fields[0].isEmpty,
+                  !fields[2].isEmpty,
                   let pid = Int(fields[1]),
                   let usedMemoryMiB = Int(fields[3]) else {
                 throw NVIDIAParseError.malformedProcess
@@ -55,6 +69,8 @@ public struct NVIDIAOutputParser: Sendable {
     private func parseGPU(_ line: String, processesByUUID: [String: [GPUProcessInfo]]) throws -> GPUSnapshot {
         let fields = csvFields(line)
         guard fields.count == 7,
+              !fields[1].isEmpty,
+              !fields[2].isEmpty,
               let index = Int(fields[0]),
               let utilizationPercent = Int(fields[3]),
               let usedMemoryMiB = Int(fields[4]),

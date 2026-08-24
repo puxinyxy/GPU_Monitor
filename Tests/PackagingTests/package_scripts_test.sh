@@ -78,8 +78,9 @@ check "installer requires an exact installed executable match" file_contains "$i
 check "installer does not use global pgrep matching" file_not_contains "$install_script" 'pgrep'
 check "installer does not use global pkill matching" file_not_contains "$install_script" 'pkill'
 
-forced_command='command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; printf '\''\n__GPU_MONITOR_PROCESSES__\n'\''; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits || true"'
+forced_command='command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\''\n__GPU_MONITOR_PROCESSES__\n'\'' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits"'
 check "provisioner installs the exact forced command" file_contains "$provision_script" "$forced_command"
+check "forced command never masks query failures" file_not_contains "$provision_script" '|| true"'
 check "provisioner allows no command-line arguments" file_contains "$provision_script" '[[ $# -eq 0 ]]'
 check "provisioner defaults to the absolute system SSH" file_contains "$provision_script" 'ssh_bin="/usr/bin/ssh"'
 check "production provisioner has no environment SSH override" file_not_contains "$provision_script" 'GPU_MONITOR_TEST_SSH_BIN'

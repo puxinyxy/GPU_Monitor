@@ -30,6 +30,7 @@ struct GPUMonitorApp: App {
         case .available: .green
         case .allBusy: .orange
         case .warning: .yellow
+        case .security: .red
         case .offline: .red
         }
     }

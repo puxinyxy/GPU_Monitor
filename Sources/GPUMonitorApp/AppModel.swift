@@ -8,6 +8,7 @@ public enum MenuStatus: Equatable, Sendable {
     case available
     case allBusy
     case warning
+    case security
     case offline
 
     public var systemImage: String {
@@ -20,6 +21,8 @@ public enum MenuStatus: Equatable, Sendable {
             "flame.fill"
         case .warning:
             "exclamationmark.triangle.fill"
+        case .security:
+            "lock.trianglebadge.exclamationmark"
         case .offline:
             "wifi.slash"
         }
@@ -229,8 +232,16 @@ public final class AppModel: ObservableObject {
             return .offline
         }
         if health.values.contains(where: { value in
-            if case .degraded = value { return true }
+            if case .security = value { return true }
             return false
+        }) {
+            return .security
+        }
+        if health.values.contains(where: { value in
+            switch value {
+            case .degraded, .warning: true
+            case .unknown, .online, .security, .offline: false
+            }
         }) {
             return .warning
         }
@@ -299,7 +310,10 @@ public final class AppModel: ObservableObject {
 
         for server in servers {
             switch cycle.health[server.id] {
-            case let .degraded(message, _), let .offline(message):
+            case let .degraded(message, _),
+                 let .warning(message),
+                 let .security(message),
+                 let .offline(message):
                 recentErrorSummary = "服务器 \(server.label)：\(message)"
                 return
             case .unknown, .online, .none:

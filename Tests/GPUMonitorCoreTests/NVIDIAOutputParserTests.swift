@@ -93,3 +93,43 @@ GPU-b, 12345, python, 18100
         try NVIDIAOutputParser().parse("__GPU_MONITOR_PROCESSES__\n", server: .fixture, capturedAt: .distantPast)
     }
 }
+
+@Test(arguments: [
+    "0, , GPU A, 0, 0, 100, 30\n__GPU_MONITOR_PROCESSES__\n",
+    "0, GPU-a, , 0, 0, 100, 30\n__GPU_MONITOR_PROCESSES__\n",
+])
+func parseRejectsEmptyGPUIdentityFields(_ output: String) {
+    #expect(throws: NVIDIAParseError.malformedGPU) {
+        try NVIDIAOutputParser().parse(output, server: .fixture, capturedAt: .distantPast)
+    }
+}
+
+@Test(arguments: [
+    "0, GPU-a, GPU A, 0, 0, 100, 30\n1, GPU-a, GPU B, 0, 0, 100, 30\n__GPU_MONITOR_PROCESSES__\n",
+    "0, GPU-a, GPU A, 0, 0, 100, 30\n0, GPU-b, GPU B, 0, 0, 100, 30\n__GPU_MONITOR_PROCESSES__\n",
+])
+func parseRejectsDuplicateGPUUUIDsAndIndices(_ output: String) {
+    #expect(throws: NVIDIAParseError.duplicateGPU) {
+        try NVIDIAOutputParser().parse(output, server: .fixture, capturedAt: .distantPast)
+    }
+}
+
+@Test(arguments: [
+    "GPU-a, 123, , 10",
+    ", 123, python, 10",
+])
+func parseRejectsEmptyProcessIdentityFields(_ processRow: String) {
+    let output = "0, GPU-a, GPU A, 0, 0, 100, 30\n__GPU_MONITOR_PROCESSES__\n\(processRow)\n"
+
+    #expect(throws: NVIDIAParseError.malformedProcess) {
+        try NVIDIAOutputParser().parse(output, server: .fixture, capturedAt: .distantPast)
+    }
+}
+
+@Test func parseRejectsProcessesWhoseGPUUUIDIsAbsent() {
+    let output = "0, GPU-a, GPU A, 0, 0, 100, 30\n__GPU_MONITOR_PROCESSES__\nGPU-orphan, 123, python, 10\n"
+
+    #expect(throws: NVIDIAParseError.orphanProcess) {
+        try NVIDIAOutputParser().parse(output, server: .fixture, capturedAt: .distantPast)
+    }
+}

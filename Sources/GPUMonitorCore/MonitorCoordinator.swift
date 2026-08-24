@@ -135,8 +135,8 @@ public actor MonitorCoordinator {
             switch outcome.result {
             case let .success(snapshot):
                 update = await tracker.recordSuccess(snapshot)
-            case let .failure(message):
-                update = await tracker.recordFailure(server: outcome.server, message: message)
+            case let .failure(failure):
+                update = await tracker.recordFailure(server: outcome.server, failure: failure)
             case .cancelled:
                 continue
             }
@@ -160,7 +160,7 @@ public actor MonitorCoordinator {
 private struct ProbeOutcome: Sendable {
     enum Result: Sendable {
         case success(ServerSnapshot)
-        case failure(String)
+        case failure(ProbeFailure)
         case cancelled
     }
 
@@ -181,11 +181,17 @@ private struct ProbeOutcome: Sendable {
             )
         } catch is CancellationError {
             return ProbeOutcome(index: index, server: server, result: .cancelled)
+        } catch let failure as ProbeFailure {
+            return ProbeOutcome(
+                index: index,
+                server: server,
+                result: .failure(failure)
+            )
         } catch {
             return ProbeOutcome(
                 index: index,
                 server: server,
-                result: .failure(error.localizedDescription)
+                result: .failure(.localLaunch)
             )
         }
     }

@@ -12,14 +12,15 @@ public struct StateUpdate: Equatable, Sendable {
 
 public actor StateTracker {
     private struct GPURecord {
-        var stable: GPUOccupancy
+        var confirmed: GPUSnapshot
         var candidate: GPUOccupancy?
         var candidateCount = 0
     }
 
     private struct ServerRecord {
-        var failures = 0
-        var offline = false
+        var connectivityFailures = 0
+        var connectivityOffline = false
+        var recoveryEventPending = false
         var lastSnapshot: ServerSnapshot?
         var gpus: [String: GPURecord] = [:]
     }
@@ -37,10 +38,11 @@ public actor StateTracker {
 
     public func recordSuccess(_ snapshot: ServerSnapshot) -> StateUpdate {
         var record = servers[snapshot.server.id] ?? ServerRecord()
-        let recoveredFromOffline = record.offline
+        let recoveredFromOffline = record.recoveryEventPending
 
-        record.failures = 0
-        record.offline = false
+        record.connectivityFailures = 0
+        record.connectivityOffline = false
+        record.recoveryEventPending = false
 
         if recoveredFromOffline {
             rebaseline(&record, with: snapshot)
@@ -59,17 +61,26 @@ public actor StateTracker {
         }
 
         var events: [MonitorEvent] = []
-        for gpu in snapshot.gpus {
+        var nextGPURecords: [String: GPURecord] = [:]
+        var confirmedGPUs: [GPUSnapshot] = []
+        var confirmedSnapshotChanged = false
+        for gpu in Self.uniqueGPUs(snapshot.gpus) {
             guard var gpuRecord = record.gpus[gpu.uuid] else {
-                record.gpus[gpu.uuid] = GPURecord(stable: gpu.occupancy)
+                let newRecord = GPURecord(confirmed: gpu)
+                nextGPURecords[gpu.uuid] = newRecord
+                confirmedGPUs.append(newRecord.confirmed)
+                confirmedSnapshotChanged = true
                 continue
             }
 
             let observed = gpu.occupancy
-            guard observed != gpuRecord.stable else {
+            guard observed != gpuRecord.confirmed.occupancy else {
+                gpuRecord.confirmed = gpu
                 gpuRecord.candidate = nil
                 gpuRecord.candidateCount = 0
-                record.gpus[gpu.uuid] = gpuRecord
+                nextGPURecords[gpu.uuid] = gpuRecord
+                confirmedGPUs.append(gpuRecord.confirmed)
+                confirmedSnapshotChanged = true
                 continue
             }
 
@@ -81,37 +92,65 @@ public actor StateTracker {
             }
 
             if gpuRecord.candidateCount >= confirmationCount {
-                let previous = gpuRecord.stable
-                gpuRecord.stable = observed
+                let previous = gpuRecord.confirmed.occupancy
+                gpuRecord.confirmed = gpu
                 gpuRecord.candidate = nil
                 gpuRecord.candidateCount = 0
                 events.append(.gpuChanged(server: snapshot.server, gpu: gpu, from: previous, to: observed))
+                confirmedSnapshotChanged = true
             }
 
-            record.gpus[gpu.uuid] = gpuRecord
+            nextGPURecords[gpu.uuid] = gpuRecord
+            confirmedGPUs.append(gpuRecord.confirmed)
         }
 
-        record.lastSnapshot = snapshot
+        record.gpus = nextGPURecords
+        if confirmedSnapshotChanged {
+            record.lastSnapshot = ServerSnapshot(
+                server: snapshot.server,
+                gpus: confirmedGPUs,
+                capturedAt: snapshot.capturedAt
+            )
+        }
         servers[snapshot.server.id] = record
         return StateUpdate(health: .online, stableSnapshot: record.lastSnapshot, events: events)
     }
 
-    public func recordFailure(server: ServerConfig, message: String) -> StateUpdate {
+    public func recordFailure(server: ServerConfig, failure: ProbeFailure) -> StateUpdate {
         var record = servers[server.id] ?? ServerRecord()
-        record.failures += 1
+        let message = failure.localizedDescription
 
         let events: [MonitorEvent]
         let health: ServerHealth
-        if record.offline {
+        switch failure {
+        case .connectivity:
+            record.connectivityFailures += 1
+            if record.connectivityOffline {
+                events = []
+                health = .offline(message: message)
+            } else if record.connectivityFailures >= offlineFailureCount {
+                record.connectivityOffline = true
+                let shouldNotify = !record.recoveryEventPending
+                record.recoveryEventPending = true
+                events = shouldNotify ? [.serverOffline(server: server, message: message)] : []
+                health = .offline(message: message)
+            } else {
+                events = []
+                health = .degraded(
+                    message: message,
+                    consecutiveFailures: record.connectivityFailures
+                )
+            }
+        case .hostKeySecurity:
+            record.connectivityFailures = 0
+            record.connectivityOffline = false
             events = []
-            health = .offline(message: message)
-        } else if record.failures >= offlineFailureCount {
-            record.offline = true
-            events = [.serverOffline(server: server, message: message)]
-            health = .offline(message: message)
-        } else {
+            health = .security(message: message)
+        case .authentication, .remoteCommand, .invalidResponse, .localLaunch:
+            record.connectivityFailures = 0
+            record.connectivityOffline = false
             events = []
-            health = .degraded(message: message, consecutiveFailures: record.failures)
+            health = .warning(message: message)
         }
 
         servers[server.id] = record
@@ -119,9 +158,19 @@ public actor StateTracker {
     }
 
     private func rebaseline(_ record: inout ServerRecord, with snapshot: ServerSnapshot) {
-        record.lastSnapshot = snapshot
-        record.gpus = Dictionary(
-            uniqueKeysWithValues: snapshot.gpus.map { ($0.uuid, GPURecord(stable: $0.occupancy)) }
+        let uniqueGPUs = Self.uniqueGPUs(snapshot.gpus)
+        record.lastSnapshot = ServerSnapshot(
+            server: snapshot.server,
+            gpus: uniqueGPUs,
+            capturedAt: snapshot.capturedAt
         )
+        record.gpus = uniqueGPUs.reduce(into: [:]) { records, gpu in
+            records[gpu.uuid] = GPURecord(confirmed: gpu)
+        }
+    }
+
+    private static func uniqueGPUs(_ gpus: [GPUSnapshot]) -> [GPUSnapshot] {
+        var seenUUIDs: Set<String> = []
+        return gpus.filter { seenUUIDs.insert($0.uuid).inserted }
     }
 }

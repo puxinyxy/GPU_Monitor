@@ -4,12 +4,19 @@ set -euo pipefail
 project_dir=${0:A:h:h:h}
 production_provisioner="$project_dir/scripts/provision_ssh.sh"
 fake_ssh="$project_dir/Tests/PackagingTests/fixtures/fake_ssh.sh"
+fake_nvidia_smi="$project_dir/Tests/PackagingTests/fixtures/fake_nvidia_smi.sh"
 test_root=$(/usr/bin/mktemp -d "${TMPDIR%/}/gpu-monitor-provision-tests.XXXXXX")
 provisioner="$test_root/instrumented-provision_ssh.sh"
 failures=0
 valid_output=$'0, GPU-1234, Test GPU, 0, 12, 24576, 35\n\n__GPU_MONITOR_PROCESSES__\n'
-forced_command='nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; printf '\''\n__GPU_MONITOR_PROCESSES__\n'\''; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits || true'
 restrictions='no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding'
+authorized_options_line=$(/usr/bin/awk '/^no-agent-forwarding,.*command="/ { print; exit }' "$production_provisioner")
+forced_command="${authorized_options_line#*command=\"}"
+forced_command="${forced_command%\"}"
+[[ -n "$forced_command" && "$forced_command" != "$authorized_options_line" ]] || {
+    print -u2 "FAIL: could not extract the production forced command"
+    exit 1
+}
 
 assignment_count=$(/usr/bin/grep -Fxc -- 'ssh_bin="/usr/bin/ssh"' "$production_provisioner" || true)
 if [[ "$assignment_count" != "1" ]]; then
@@ -31,6 +38,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+forced_command_bin="$test_root/forced-command-bin"
+/bin/mkdir -p "$forced_command_bin"
+/bin/cp "$fake_nvidia_smi" "$forced_command_bin/nvidia-smi"
+/bin/chmod 755 "$forced_command_bin/nvidia-smi"
+
 record_failure() {
     print -u2 "FAIL: $1"
     failures=$((failures + 1))
@@ -39,6 +51,42 @@ record_failure() {
 record_pass() {
     print "PASS: $1"
 }
+
+run_forced_command() {
+    /usr/bin/env \
+        PATH="$forced_command_bin:/usr/bin:/bin" \
+        GPU_MONITOR_TEST_GPU_STATUS="${gpu_query_status:-0}" \
+        GPU_MONITOR_TEST_COMPUTE_STATUS="${compute_query_status:-0}" \
+        /bin/sh -c "$forced_command"
+}
+
+gpu_query_status=17
+if forced_output=$(run_forced_command 2>&1); then
+    record_failure "GPU query failure makes the forced command fail"
+elif [[ "$?" != "17" || "$forced_output" == *"__GPU_MONITOR_PROCESSES__"* ]]; then
+    record_failure "GPU query failure is propagated before the marker"
+else
+    record_pass "GPU query failure is propagated before the marker"
+fi
+unset gpu_query_status
+
+compute_query_status=23
+if forced_output=$(run_forced_command 2>&1); then
+    record_failure "compute query failure makes the forced command fail"
+elif [[ "$?" != "23" || "$forced_output" != *"__GPU_MONITOR_PROCESSES__"* ]]; then
+    record_failure "compute query failure is propagated after the marker"
+else
+    record_pass "compute query failure is propagated after the marker"
+fi
+unset compute_query_status
+
+if forced_output=$(run_forced_command 2>&1) &&
+    [[ "$forced_output" == 0,* ]] &&
+    [[ "$forced_output" == *$'\n__GPU_MONITOR_PROCESSES__' ]]; then
+    record_pass "empty successful compute output remains a valid free-GPU sample"
+else
+    record_failure "empty successful compute output remains a valid free-GPU sample"
+fi
 
 new_case() {
     local name=$1

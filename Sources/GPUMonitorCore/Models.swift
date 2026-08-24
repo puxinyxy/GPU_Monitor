@@ -85,6 +85,8 @@ public enum ServerHealth: Equatable, Sendable {
     case unknown
     case online
     case degraded(message: String, consecutiveFailures: Int)
+    case warning(message: String)
+    case security(message: String)
     case offline(message: String)
 }
 
