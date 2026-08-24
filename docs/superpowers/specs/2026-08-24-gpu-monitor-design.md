@@ -73,7 +73,7 @@ nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,
 - `free`
 - `busy`
 
-首次成功采样直接建立基准，不发送状态变化通知。每个 GPU 记录完整的 confirmed GPU（占用状态、指标和进程），`ServerSnapshot` 只由 confirmed GPU 组合。此后某个候选状态必须连续出现两次才成为稳定状态；第一次相反候选不得改变稳定快照或 UI 占用。与 confirmed 占用一致的成功观察可以刷新指标和进程。15 秒轮询下，正常变化会在约 15–30 秒内确认，失败采样继续保留 confirmed snapshot。
+首次成功采样直接建立基准，不发送状态变化通知。每个 GPU 记录完整的 confirmed GPU（占用状态、指标和进程），`ServerSnapshot` 只由 confirmed GPU 组合。此后某个候选状态必须连续出现两次才成为稳定状态；第一次相反候选不得改变稳定快照或 UI 占用。与 confirmed 占用一致的成功观察可以刷新指标和进程。15 秒轮询下，正常变化会在约 15–30 秒内确认。失败采样保留 confirmed snapshot，也保留尚未确认的候选；因此 `candidate -> failed poll -> same candidate` 会把最后一次观察计为第二个匹配候选。候选、离线和恢复记录均按服务器隔离。
 
 probe 失败保留脱敏的结构化分类：connectivity、host-key/security、authentication、remote-command、invalid-response 和 local-launch。只有连续 connectivity 失败才累计；连续三次后将服务器标记为离线并发送一次通知，真实的 `Network is unreachable` 与 `Connection refused` 都属于 connectivity。其余分类会中断 connectivity 连续计数：主机密钥失败显示独立安全错误，认证、远端命令、无效响应和本地启动失败显示独立查询警告，绝不触发离线通知。下一次成功查询后才发送一次恢复通知。任何错误文案都不得包含主机、用户、私钥路径或远端 stderr 中的秘密。
 
@@ -88,7 +88,7 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 
 首版的 `MacOSNotificationSink` 使用 `UserNotifications`。应用启动前安装并强引用 `UNUserNotificationCenterDelegate`，使应用位于前台时通知仍以 banner/list 展示并播放系统提示音。通知权限会在每次刷新、菜单面板每次呈现及应用重新激活时重新读取；并发读取合并为一个任务，菜单关闭会取消对应的 SwiftUI view task，停止后返回的旧结果会被丢弃。同一服务器在同一次采样中有多张 GPU 变化时合并为一条通知，例如：
 
-当前 ad-hoc 签名被系统以 `UNError.Code.notificationsNotAllowed` 拒绝且授权状态不是 `denied` 时，通知适配器切换到安全兼容模式：固定调用 `/usr/bin/osascript`，固定标题为“GPU Monitor”，把事件标题作为副标题、正文作为独立 argv 传入。菜单显示橙色“通知：兼容模式”，系统通知来源显示为“脚本编辑器”。原生权限以后可用时自动恢复原生通道；用户明确拒绝时绝不回退。
+当 ad-hoc 签名被系统以 `UNError.Code.notificationsNotAllowed` 拒绝且授权状态不是 `denied` 时，通知适配器切换到安全兼容模式：固定调用 `/usr/bin/osascript`，固定标题为“GPU Monitor”，把事件标题作为副标题、正文作为独立 argv 传入。菜单显示橙色“通知：兼容模式”，系统通知来源显示为“脚本编辑器”。原生权限以后可用时自动恢复原生通道；用户明确拒绝时绝不回退。
 
 ```text
 服务器 10122：GPU 0、GPU 2 已空闲
@@ -137,8 +137,8 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 1. 本机生成一把无口令、仅供 GPU Monitor 使用的 Ed25519 密钥。
 2. 使用用户提供的密码分别登录两个 SSH 端口。
 3. 首次连接采用 TOFU（Trust On First Use）：读取并记录每个端口对应的服务器主机指纹，在安装报告中展示该指纹。
-4. 向远端用户的 `~/.ssh/authorized_keys` 追加带 `restrict` 和强制命令的专用公钥。
-5. 使用 `BatchMode=yes` 验证两台服务器均只能返回监控数据，且不能获得交互式 Shell。
+4. 向远端用户的 `~/.ssh/authorized_keys` 追加带限制选项和强制命令的专用公钥，并记录该精确行是否由本轮新加。
+5. 使用 `BatchMode=yes` 验证两台服务器均只能返回监控数据、拒绝转发且不能获得交互式 Shell；任一安装后安全验证失败时，只对本轮新加的精确行执行密码认证回滚并验证其已不存在。预先存在的相同行绝不删除，回滚失败则给出不含密钥材料的人工修复提示并失败关闭。
 
 该过程不覆盖现有 `authorized_keys`，只追加一行。若服务器 OpenSSH 不支持 `restrict`，使用等价的 `no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding` 限制选项。
 
@@ -150,7 +150,7 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 - 主机密钥、认证、远端命令、无效响应和本地 SSH 启动错误：保留旧状态，显示各自的 warning/security health，并中断 connectivity 连续计数。
 - `nvidia-smi` 不存在或任一查询返回非零：SSH 采样整体失败并显示远端命令警告，不把服务器当作无 GPU。
 - 单行 GPU 数据格式错误：本次服务器采样整体失败，避免产生部分状态误报。
-- GPU UUID/名称、进程 GPU UUID/名称不得为空；GPU UUID 与 index 不得重复；进程 GPU UUID 必须引用本次 GPU 清单。
+- GPU UUID/名称、进程 GPU UUID/名称不得为空；GPU UUID 与 index 不得重复；进程 GPU UUID 必须引用本次 GPU 清单。分段 marker 必须是唯一一行经 trim 后完全等于 `__GPU_MONITOR_PROCESSES__` 的独立行，名称中的 marker 子串只是普通数据。
 - 无计算进程输出：正常解析为所有 GPU 空闲。
 - 通知权限明确被用户拒绝：菜单栏继续工作并显示“通知：未授权”，不得启用兼容通道。
 - ad-hoc 签名触发精确的 `notificationsNotAllowed` 错误：启用兼容通道；其他授权错误显示“通知：状态错误”。
@@ -191,7 +191,7 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 - 应用不出现在“登录项”中。
 - 安装验收应按运行时授权结果判断：原生授权成功时预期由 GPU Monitor 原生投递；只有精确 `notificationsNotAllowed` 且授权状态不是 `denied` 时才预期进入“通知：兼容模式”并由“脚本编辑器”显示。
 - 2026-08-24 实机验收：原生 `com.yxy.gpumonitor` 通知在 10165 第三次连接拒绝附近展示一次，后续观察未重复；本次未在实机触发兼容模式。
-- 安装器的离线行为 harness 在临时目录用假命令覆盖无匹配进程、不同 UID/路径、Apple Event 失败、退出超时和正常退出顺序，保证测试不接触真实 `/Applications`、进程或 Apple Event。
+- 安装器的离线行为 harness 在临时目录验证 Apple Event 失败/退出超时、阶段复制、阶段签名/身份、替换、最终验证、备份恢复、无旧应用失败清理和完整成功顺序。候选只复制到 `/Applications` 下唯一显式 staging 路径并先验签/验 bundle identity；旧包随后移到显式 backup，验证后的 stage 原子替换 final，最终验证失败则恢复并验证 backup。测试不接触真实 `/Applications`、进程或 Apple Event。
 
 ## 9. 交付物
 

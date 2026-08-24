@@ -799,7 +799,7 @@ Add a README “通知模式” section that states:
 ```markdown
 ## 通知模式
 
-应用优先使用 `UserNotifications` 发送来源为 GPU Monitor 的原生通知。当前 ad-hoc 签名若被 macOS 以 `notificationsNotAllowed` 拒绝，应用会自动进入“通知：兼容模式”，通过固定的 `/usr/bin/osascript` 系统通道投递；通知标题仍为 GPU Monitor，系统显示的来源为“脚本编辑器”。标题和正文作为独立参数传入，不经过 Shell。用户若明确拒绝通知，应用不会启用兼容模式。以后用有效 Apple 证书签名后，应用会自动恢复原生通道。
+应用优先使用 `UserNotifications` 发送来源为 GPU Monitor 的原生通知。ad-hoc 签名若被 macOS 以精确 `notificationsNotAllowed` 拒绝且当前状态不是 `denied`，应用会进入“通知：兼容模式”，通过固定的 `/usr/bin/osascript` 系统通道投递；通知标题仍为 GPU Monitor，系统显示的来源为“脚本编辑器”。标题和正文作为独立参数传入，不经过 Shell。用户若明确拒绝通知，应用不会启用兼容模式。有效 Apple 证书签名可能使系统允许原生通知，但只有实际观察到 `authorized`、`provisional` 或 `ephemeral` 后才恢复原生通道。
 ```
 
 In the main design document, append this paragraph to `4.3 Notifier`:
@@ -821,7 +821,8 @@ Add these exact unit-test and installation-acceptance bullets:
 ```markdown
 - 精确匹配 `notificationsNotAllowed`、明确拒绝不回退、原生权限恢复和兼容投递取消。
 - 验证兼容通知固定使用 `/usr/bin/osascript`，动态内容只作为 argv，不能进入 AppleScript 源码或 Shell。
-- 当前 ad-hoc 安装显示“通知：兼容模式”，10165 连续三次连接拒绝后由通知中心展示一次离线通知，后续轮询不重复发送。
+- 实机验收按运行时状态判断：原生授权可用时应由 GPU Monitor 原生投递；只有精确 `notificationsNotAllowed` 且不是 `denied` 时才应进入兼容模式。
+- 2026-08-24 最终实机结果：原生 `com.yxy.gpumonitor` 离线通知展示一次且后续轮询未重复；本次未触发兼容模式，因此“脚本编辑器”来源的兼容投递未获本轮实机验证。
 ```
 
 - [ ] **Step 4: Run all automated verification**

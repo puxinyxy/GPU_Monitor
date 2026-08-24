@@ -2,7 +2,7 @@
 
 ## 1. 背景与目标
 
-GPU Monitor 已使用 `UserNotifications` 发送原生 macOS 通知。当前安装包采用 ad-hoc 签名，实际启动时 `UNUserNotificationCenter.requestAuthorization` 稳定返回 `UNErrorDomain` 的 `notificationsNotAllowed` 错误；系统中也没有可用的 Apple 代码签名身份。相同机器上，由 `/usr/bin/osascript` 调用 `display notification` 可以被通知中心正常投递和展示。
+GPU Monitor 已使用 `UserNotifications` 发送原生 macOS 通知。早期排查曾在 ad-hoc 签名包上复现 `UNUserNotificationCenter.requestAuthorization` 返回 `UNErrorDomain` 的 `notificationsNotAllowed` 错误；该结果是兼容方案的历史触发条件，不是最终实机验收结果。2026-08-24 最终实机观察中，原生 `com.yxy.gpumonitor` 通知成功展示，本次未触发兼容模式。相同机器上，早期也验证了由 `/usr/bin/osascript` 调用 `display notification` 可以被通知中心投递和展示。
 
 本次改动的目标是在保留原生通知主通道的同时，为这种“系统拒绝临时签名应用注册通知”的环境增加安全兼容通道，使 GPU 占用、空闲、服务器离线和恢复事件仍能产生 macOS 系统通知。既有 `NotificationSink` 接口保持不变，后续微信实现仍通过该接口接入。
 
@@ -50,8 +50,11 @@ AppleScript 程序是源码中的固定参数，不拼接任何事件数据。�
 - `requestAuthorization()` 负责首次选择模式。
 - `authorizationState()` 负责随系统状态变化纠正模式。
 - `send(events:)` 继续使用既有 `NotificationFormatter` 聚合事件，再将每条消息发送给当前通道。
+- 授权状态按语义优先级合并：较新的明确允许或拒绝状态覆盖旧证据；较新的 `notDetermined`/`error` 不得抹掉稍后完成的精确错误证据；旧的不确定结果也不得覆盖新的明确状态。
+- 兼容路由携带修订号；路由过期时进行有界重选，并在调用兼容客户端前同步确认修订号和模式仍有效，绝不把过期兼容路由默认改投原生。
 - 任一消息投递失败时沿用 `NotificationDeliveryFailureReason.schedulingFailed`，只报告失败数量，不把命令 stderr、路径或事件正文写入错误摘要。
 - 任务取消后不得继续启动新的兼容通知进程。
+- 停止流程会取消并 drain 已启动的兼容命令，等待 `CommandRunner` 杀死并回收子进程；应用层对 drain 另设有界等待，未来不合作的 `NotificationSink` 不能无限阻塞退出。
 
 `NotificationAuthorizationState` 新增 `compatibility`。菜单显示“通知：兼容模式”，使用橙色和 `bell.fill` 图标；它不被当作授权错误。
 
@@ -67,7 +70,7 @@ AppleScript 程序是源码中的固定参数，不拼接任何事件数据。�
 | compatibility 模式下后来读取到 denied | native，禁用回退 | denied |
 | 其他请求错误 | native | error |
 
-兼容模式只存在于当前应用进程内，不写入配置文件。应用每次启动都会先尝试原生授权，因此以后使用正式 Apple 证书签名安装时会自然回到原生通知。
+兼容模式只存在于当前应用进程内，不写入配置文件。应用每次启动都会先尝试原生授权；正式 Apple 证书签名可能使原生通知可用，但只有实际观察到 authorized、provisional 或 ephemeral 后才恢复原生通道，不把签名本身当作成功保证。
 
 ## 5. 安全与隐私
 
@@ -99,17 +102,11 @@ AppleScript 程序是源码中的固定参数，不拼接任何事件数据。�
 7. 菜单对 compatibility 的文字、图标、颜色和非错误语义。
 8. 包装策略测试禁止 Shell 与动态 AppleScript 拼接。
 
-真实验收包括：
-
-- 重新打包并安装 `/Applications/GPU Monitor.app`。
-- 启动后确认菜单显示“通知：兼容模式”。
-- 利用端口 10165 当前稳定的连接拒绝，在第三次 connectivity 失败后确认通知中心收到一次服务器离线通知，后续轮询不重复发送。
-- 确认端口 10122 仍能实时显示 7 张 GPU 的状态。
-- 确认没有新增登录项或开机自启设置。
+真实验收按运行时授权结果判断：原生授权可用时应由 GPU Monitor 原生投递；只有精确 `notificationsNotAllowed` 且当前状态不是 `denied` 时，才应显示“通知：兼容模式”并由“脚本编辑器”投递。2026-08-24 最终实机结果是原生离线通知展示一次且后续轮询未重复，本次未触发兼容模式，因此“脚本编辑器”来源的实机兼容投递仍是已知验收限制。任何验收都不得新增登录项或开机自启设置。
 
 ## 8. 文档与非目标
 
-README 将说明原生通知与兼容通知的选择条件、兼容通知来源显示为“脚本编辑器”，以及安装正式 Apple 签名后可恢复 GPU Monitor 原生来源。
+README 将说明原生通知与兼容通知的选择条件、兼容通知来源显示为“脚本编辑器”，以及正式 Apple 签名只可能帮助恢复原生来源、仍须以实际授权观察为准。
 
 本次不包含：
 

@@ -375,7 +375,7 @@ public actor StateTracker {
 }
 ```
 
-Only consecutive `.connectivity` failures advance the offline threshold. Host-key failures become security health; authentication, remote-command, invalid-response, and local-launch failures become warning health and reset connectivity accumulation. A first opposite candidate leaves `stableSnapshot` unchanged; confirmed observations refresh the stored full GPU metrics/processes. On recovery after a confirmed offline state, emit only `.serverRecovered`, defensively unique direct-input UUIDs, replace all GPU baselines with the recovered snapshot, and suppress stale GPU-change events.
+Only consecutive `.connectivity` failures advance the offline threshold. Host-key failures become security health; authentication, remote-command, invalid-response, and local-launch failures become warning health and reset connectivity accumulation. A first opposite candidate leaves `stableSnapshot` unchanged; a failed poll preserves both the confirmed snapshot and that candidate, so a later matching observation completes confirmation. Candidate, offline, and recovery state are isolated per server. Confirmed observations refresh the stored full GPU metrics/processes. On recovery after a confirmed offline state, emit only `.serverRecovered`, defensively unique direct-input UUIDs, replace all GPU baselines with the recovered snapshot, and suppress stale GPU-change events.
 
 - [ ] **Step 4: Run transition tests and the full suite**
 
@@ -793,9 +793,9 @@ codesign --force --deep --sign - "$app_dir"
 codesign --verify --deep --strict --verbose=2 "$app_dir"
 ```
 
-`scripts/install_app.sh` first detects only the current user's process whose executable path exactly equals `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor`. When present it requests graceful quit through `/usr/bin/osascript` using the fixed bundle identifier, waits boundedly for that exact process to disappear, and fails closed if the Apple event fails or the app remains alive. It never sends SIGTERM/SIGKILL. It then replaces only `/Applications/GPU Monitor.app` with the freshly packaged app using `ditto`, verifies the installed signature, and opens it. It must never touch other applications.
+`scripts/install_app.sh` first detects only the current user's process whose executable path exactly equals `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor`. When present it requests graceful quit through `/usr/bin/osascript` using the fixed bundle identifier, waits boundedly for that exact process to disappear, and fails closed if the Apple event fails or the app remains alive. It never sends SIGTERM/SIGKILL. It copies the candidate to one unique explicit staging path under `/Applications`, verifies signature and bundle identity, moves any installed bundle to an explicit backup, atomically moves the verified stage to `/Applications/GPU Monitor.app`, and verifies the final bundle. Replacement/final-verification failure restores and verifies the backup; without a prior app, failure leaves no corrupt final bundle. Only explicit guarded stage/backup paths are cleaned.
 
-`Tests/PackagingTests/install_app_behavior_test.sh` copies the production installer into a guarded temporary sandbox and replaces every process, Apple Event, sleep, remove, copy, signing, and launch command with a fake. It verifies no-match, different-UID/path, Apple-event failure, quit timeout, and graceful-disappearance cases, including the required quit-before-overwrite order, without touching real applications or processes.
+`Tests/PackagingTests/install_app_behavior_test.sh` copies the production installer into a guarded temporary sandbox and replaces every process, Apple Event, sleep, stage, move, remove, identity, signing, and launch command with a fake. It verifies stage-copy/signature/identity failures preserve the old bundle, replacement and final-verification failures restore it, no-prior-app failure leaves no corrupt final, and success orders quit, stage verification, backup, replacement, final verification, cleanup, and open without touching real applications or processes.
 
 - [ ] **Step 3: Add an interactive password-free-source SSH provisioning script**
 
@@ -811,7 +811,7 @@ no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,comma
 
 The two queries and marker are chained with `&&`: a nonzero GPU or compute query makes the SSH sample fail. The offline behavior harness must cover each nonzero query independently, plus the successful empty compute-output case.
 
-Append only when the public-key blob is absent. After installation, run a `BatchMode=yes` sample and a second attempt containing `echo SHOULD_NOT_RUN`; fail provisioning if the latter text appears, proving the forced command prevented the requested shell command.
+Append only when the public-key blob is absent and record whether the exact restricted line was newly added by this run. After installation, run a `BatchMode=yes` sample, a second attempt containing `echo SHOULD_NOT_RUN`, remote-forwarding denial proof, and final validation. Any post-install security failure password-authenticates again to remove and verify absence of only that newly added exact line. A pre-existing line is never removed; rollback failure fails closed with sanitized manual-remediation guidance.
 
 The script contains no password literal and does not accept a password command-line argument.
 

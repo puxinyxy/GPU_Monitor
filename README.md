@@ -14,7 +14,7 @@ swift run GPUMonitorCoreTestsRunner
 ./scripts/install_app.sh
 ```
 
-`package_app.sh` 生成并验证 `dist/GPU Monitor.app` 的 ad-hoc 签名。`install_app.sh` 重新打包；只有检测到当前用户从 `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor` 精确路径运行的实例时，才通过固定 bundle identifier 的 Apple Event 请求已安装实例正常退出，并等待它完成 SSH 子进程清理。Apple Event 失败或实例在限定时间内未退出时，安装会停止，不发送 SIGTERM/SIGKILL。随后脚本只替换 `/Applications/GPU Monitor.app`，验证签名并启动应用。安装过程不会修改其他应用，也不会停止调试版本或其他同名进程。
+`package_app.sh` 生成并验证 `dist/GPU Monitor.app` 的 ad-hoc 签名。`install_app.sh` 重新打包；只有检测到当前用户从 `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor` 精确路径运行的实例时，才通过固定 bundle identifier 的 Apple Event 请求已安装实例正常退出，并等待它完成 SSH 与兼容通知子进程清理。Apple Event 失败或实例在限定时间内未退出时，安装会停止，不发送 SIGTERM/SIGKILL。候选包先复制到 `/Applications` 下唯一 staging 路径并验证签名和 bundle identity；旧包再移入显式 backup，验证后的候选原子替换最终路径并再次校验。替换或最终校验失败时恢复并验证旧包；没有旧包时不会留下损坏的最终 bundle。安装过程不会修改其他应用，也不会停止调试版本或其他同名进程。
 
 ## 本地验证
 
@@ -74,7 +74,7 @@ GPU 的空闲/占用由是否存在计算进程判断。利用率、显存和温
 nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\n__GPU_MONITOR_PROCESSES__\n' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits
 ```
 
-两条查询与 marker 用 `&&` 串联，任一查询非零都会使采样失败；成功但没有计算进程输出仍是正常的空闲状态。配置脚本会实际请求 `echo SHOULD_NOT_RUN`，只有确认该文本未执行且仍返回监控数据时才成功。
+两条查询与 marker 用 `&&` 串联，任一查询非零都会使采样失败；成功但没有计算进程输出仍是正常的空闲状态。配置脚本会实际请求 `echo SHOULD_NOT_RUN` 并验证转发被拒绝，只有所有安全检查均成功才保留新装的远端行。若本轮新加的精确行未通过后续验证，脚本会重新进行密码认证，只回滚该行并确认它已不存在；相同行若在运行前已经存在则绝不自动删除。回滚失败会失败关闭并给出不含公钥或私钥材料的人工修复提示。
 
 ## 卸载
 
