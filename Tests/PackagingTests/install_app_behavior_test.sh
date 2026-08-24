@@ -71,11 +71,18 @@ case_root=$GPU_MONITOR_INSTALL_TEST_CASE_ROOT
 scenario=$GPU_MONITOR_INSTALL_TEST_SCENARIO
 log_file=$GPU_MONITOR_INSTALL_TEST_LOG
 [[ "$case_root" == /tmp/gpu-monitor-install-test.*/* ]]
-[[ "$#" -eq 2 && "$1" == "-e" ]]
-[[ "$2" == 'tell application id "com.yxy.gpumonitor" to quit' ]]
-print -r -- "osascript:$2" >> "$log_file"
-[[ "$scenario" == "apple_failure" ]] && exit 42
-[[ "$scenario" == "success" ]] && : > "$case_root/quit-requested"
+[[ "$#" -eq 6 &&
+   "$1" == "-e" && "$2" == 'ignoring application responses' &&
+   "$3" == "-e" && "$4" == 'tell application id "com.yxy.gpumonitor" to quit' &&
+   "$5" == "-e" && "$6" == 'end ignoring' ]]
+print -r -- "osascript:$2|$4|$6" >> "$log_file"
+if [[ "$scenario" == "apple_failure" ]]; then
+    exit 42
+fi
+if [[ "$scenario" == "success" ]]; then
+    : > "$case_root/quit-requested"
+fi
+exit 0
 EOF
 
     /bin/cat > "$fake_bin/sleep" <<'EOF'
@@ -362,11 +369,27 @@ print "PASS: different UID or executable path does not match the installed proce
 run_case apple_failure nonzero
 assert_version apple_failure old
 [[ ! -e "$test_root/apple_failure/Applications/.gpu-monitor-install.TEST" ]]
+/usr/bin/grep -Fq -- \
+    'Unable to request a graceful GPU Monitor quit; installation stopped.' \
+    "$test_root/apple_failure/stderr.log"
+[[ "$(/usr/bin/grep -c '^osascript:' "$test_root/apple_failure/events.log")" -eq 1 ]]
+! /usr/bin/grep -Eq '^(sleep|mktemp|ditto|mv|rm|open):' \
+    "$test_root/apple_failure/events.log"
 print "PASS: Apple Event failure preserves the installed bundle"
 
 run_case timeout nonzero
 assert_version timeout old
 [[ ! -e "$test_root/timeout/Applications/.gpu-monitor-install.TEST" ]]
+/usr/bin/grep -Fq -- \
+    'The installed GPU Monitor copy did not quit gracefully; installation stopped.' \
+    "$test_root/timeout/stderr.log"
+! /usr/bin/grep -Fq -- \
+    'Unable to request a graceful GPU Monitor quit; installation stopped.' \
+    "$test_root/timeout/stderr.log"
+[[ "$(/usr/bin/grep -c '^osascript:' "$test_root/timeout/events.log")" -eq 1 ]]
+[[ "$(/usr/bin/grep -c '^sleep:0.1$' "$test_root/timeout/events.log")" -eq 50 ]]
+! /usr/bin/grep -Eq '^(mktemp|ditto|mv|rm|open):' \
+    "$test_root/timeout/events.log"
 print "PASS: graceful-quit timeout preserves the installed bundle"
 
 for scenario in stage_copy_failure staged_signature_failure staged_identity_failure; do
@@ -396,6 +419,9 @@ print "PASS: failed replacement with no prior app leaves no corrupt final bundle
 run_case success zero
 assert_version success candidate
 assert_transaction_removed success
+/usr/bin/grep -Fxq -- \
+    'osascript:ignoring application responses|tell application id "com.yxy.gpumonitor" to quit|end ignoring' \
+    "$test_root/success/events.log"
 quit_line=$(event_line success '^osascript:')
 stage_line=$(event_line success '^ditto:')
 stage_verify_line=$(event_line success '^codesign:.*stage$')

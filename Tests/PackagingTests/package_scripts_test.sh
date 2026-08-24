@@ -129,6 +129,8 @@ check "installer does not use global pkill matching" file_not_contains "$install
 check "installer uses the fixed bundle identifier" file_contains "$install_script" 'bundle_identifier="com.yxy.gpumonitor"'
 check "installer requests graceful quit through Apple events" file_contains "$install_script" '/usr/bin/osascript'
 check "installer targets graceful quit by bundle identifier" file_contains "$install_script" 'tell application id \"$bundle_identifier\" to quit'
+check "installer does not wait for the quit Apple Event response" file_contains "$install_script" 'ignoring application responses'
+check "installer closes the nonblocking Apple Event scope" file_contains "$install_script" 'end ignoring'
 check "installer fails closed when graceful quit fails" file_contains "$install_script" 'Unable to request a graceful GPU Monitor quit; installation stopped.'
 check "installer waits for the exact process after graceful quit" file_contains "$install_script" 'The installed GPU Monitor copy did not quit gracefully; installation stopped.'
 check "installer never sends SIGTERM" file_not_contains "$install_script" 'kill -TERM'

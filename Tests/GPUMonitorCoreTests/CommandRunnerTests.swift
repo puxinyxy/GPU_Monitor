@@ -1,7 +1,43 @@
 import Foundation
 import Darwin
 import Testing
-import GPUMonitorCore
+@testable import GPUMonitorCore
+
+@Test func commandRunnerCompletionCanArriveBeforeWaiterRegistration() async throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+    try process.run()
+    process.waitUntilExit()
+
+    let synchronizedProcess = SynchronizedProcess()
+    synchronizedProcess.processDidTerminate(process)
+    let clock = ContinuousClock()
+    let startedAt = clock.now
+    let completion = await synchronizedProcess.waitForExit()
+
+    #expect(completion.exitCode == 0)
+    #expect(!completion.timedOut)
+    #expect(!completion.cancelled)
+    #expect(startedAt.duration(to: clock.now) < .milliseconds(100))
+}
+
+@Test func commandRunnerCompletesConcurrentImmediateProcesses() async throws {
+    try await withThrowingTaskGroup(of: CommandResult.self) { group in
+        for _ in 0..<50 {
+            group.addTask {
+                try await CommandRunner().run(
+                    executable: "/usr/bin/true",
+                    arguments: [],
+                    timeout: .seconds(1)
+                )
+            }
+        }
+
+        for try await result in group {
+            #expect(result.exitCode == 0)
+        }
+    }
+}
 
 @Test func commandRunnerCapturesOutput() async throws {
     let result = try await CommandRunner().run(

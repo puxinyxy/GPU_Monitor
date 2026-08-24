@@ -14,7 +14,7 @@ swift run GPUMonitorCoreTestsRunner
 ./scripts/install_app.sh
 ```
 
-`package_app.sh` 生成并验证 `dist/GPU Monitor.app` 的 ad-hoc 签名。`install_app.sh` 重新打包；只有检测到当前用户从 `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor` 精确路径运行的实例时，才通过固定 bundle identifier 的 Apple Event 请求已安装实例正常退出，并等待它完成 SSH 与兼容通知子进程清理。Apple Event 失败或实例在限定时间内未退出时，安装会停止，不发送 SIGTERM/SIGKILL。候选包先复制到 `/Applications` 下唯一 staging 路径并验证签名和 bundle identity；旧包再移入显式 backup，验证后的候选原子替换最终路径并再次校验。替换或最终校验失败时恢复并验证旧包；没有旧包时不会留下损坏的最终 bundle。安装过程不会修改其他应用，也不会停止调试版本或其他同名进程。
+`package_app.sh` 生成并验证 `dist/GPU Monitor.app` 的 ad-hoc 签名。`install_app.sh` 重新打包；只有检测到当前用户从 `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor` 精确路径运行的实例时，才通过固定 bundle identifier 的非阻塞 Apple Event 请求已安装实例正常退出，并有界等待它完成 SSH 与兼容通知子进程清理。Apple Event 失败或实例在限定时间内未退出时，安装会停止，不发送 SIGTERM/SIGKILL。候选包先复制到 `/Applications` 下唯一 staging 路径并验证签名和 bundle identity；旧包再移入显式 backup，验证后的候选原子替换最终路径并再次校验。替换或最终校验失败时恢复并验证旧包；没有旧包时不会留下损坏的最终 bundle。安装过程不会修改其他应用，也不会停止调试版本或其他同名进程。
 
 ## 本地验证
 

@@ -45,7 +45,10 @@ installed_pids() {
 
 running_pids=(${(f)"$(installed_pids)"})
 if (( ${#running_pids} > 0 )); then
-    if ! /usr/bin/osascript -e "tell application id \"$bundle_identifier\" to quit" >/dev/null; then
+    if ! /usr/bin/osascript \
+        -e 'ignoring application responses' \
+        -e "tell application id \"$bundle_identifier\" to quit" \
+        -e 'end ignoring' >/dev/null; then
         print -u2 "Unable to request a graceful GPU Monitor quit; installation stopped."
         exit 1
     fi

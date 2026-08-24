@@ -71,9 +71,6 @@ public struct CommandRunner: CommandRunning, Sendable {
             let errorReader = PipeReader(handle: errorHandle)
             outputReader.start()
             errorReader.start()
-            let waitTask = Task.detached {
-                processBox.waitUntilExit(process)
-            }
             let timeoutTask = Task {
                 do {
                     try await ContinuousClock().sleep(for: timeout)
@@ -85,7 +82,7 @@ public struct CommandRunner: CommandRunning, Sendable {
                 }
             }
 
-            let completion = await waitTask.value
+            let completion = await processBox.waitForExit()
             timeoutTask.cancel()
 
             async let outputData = outputReader.finishAfterProcessExit()
@@ -205,7 +202,7 @@ private final class PipeReadState: @unchecked Sendable {
     }
 }
 
-private final class SynchronizedProcess: @unchecked Sendable {
+final class SynchronizedProcess: @unchecked Sendable {
     private enum State {
         case ready
         case running
@@ -221,6 +218,8 @@ private final class SynchronizedProcess: @unchecked Sendable {
     private let lock = NSLock()
     private var state = State.ready
     private var process: Process?
+    private var completion: Completion?
+    private var completionContinuation: CheckedContinuation<Completion, Never>?
     private var didTimeOut = false
     private var wasCancelled = false
 
@@ -235,23 +234,46 @@ private final class SynchronizedProcess: @unchecked Sendable {
             throw CommandError.timedOut
         }
 
+        process.terminationHandler = { [weak self] terminatedProcess in
+            self?.processDidTerminate(terminatedProcess)
+        }
         try process.run()
         self.process = process
         state = .running
     }
 
-    func waitUntilExit(_ process: Process) -> Completion {
-        process.waitUntilExit()
+    func waitForExit() async -> Completion {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let completion {
+                lock.unlock()
+                continuation.resume(returning: completion)
+            } else {
+                precondition(completionContinuation == nil)
+                completionContinuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func processDidTerminate(_ process: Process) {
+        var waitingContinuation: CheckedContinuation<Completion, Never>?
+        let result: Completion
 
         lock.lock()
-        defer { lock.unlock() }
         state = .finished
         self.process = nil
-        return Completion(
+        result = Completion(
             exitCode: process.terminationStatus,
             timedOut: didTimeOut,
             cancelled: wasCancelled
         )
+        completion = result
+        waitingContinuation = completionContinuation
+        completionContinuation = nil
+        lock.unlock()
+
+        waitingContinuation?.resume(returning: result)
     }
 
     func timeout() {
