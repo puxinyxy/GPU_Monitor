@@ -9,7 +9,7 @@ set -euo pipefail
 
 host="122.207.108.8"
 username="yanxiaoyang"
-ports=(10222 10165)
+ports=(10122 10165)
 ssh_dir="$HOME/.ssh"
 identity_file="$ssh_dir/gpu_monitor_ed25519"
 public_key_file="$identity_file.pub"

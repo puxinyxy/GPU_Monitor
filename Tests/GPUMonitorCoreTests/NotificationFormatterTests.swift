@@ -3,12 +3,12 @@ import GPUMonitorCore
 
 @Test func formatterAggregatesFreeGPUsOnTheSameServer() {
     let messages = NotificationFormatter().messages(for: [
-        .gpuChanged(server: .server10222, gpu: .gpu(index: 2, .free), from: .busy, to: .free),
-        .gpuChanged(server: .server10222, gpu: .gpu(index: 0, .free), from: .busy, to: .free),
+        .gpuChanged(server: .server10122, gpu: .gpu(index: 2, .free), from: .busy, to: .free),
+        .gpuChanged(server: .server10122, gpu: .gpu(index: 0, .free), from: .busy, to: .free),
     ])
 
     #expect(messages == [
-        NotificationMessage(title: "GPU 已空闲", body: "服务器 10222：GPU 0、GPU 2 已空闲"),
+        NotificationMessage(title: "GPU 已空闲", body: "服务器 10122：GPU 0、GPU 2 已空闲"),
     ])
 }
 
@@ -32,15 +32,15 @@ import GPUMonitorCore
 
 @Test func formatterProducesOneMessageForEachConnectivityEvent() {
     let messages = NotificationFormatter().messages(for: [
-        .serverOffline(server: .server10222, message: "connection timed out"),
+        .serverOffline(server: .server10122, message: "connection timed out"),
         .serverRecovered(server: .server10165),
-        .serverOffline(server: .server10222, message: "host unreachable"),
+        .serverOffline(server: .server10122, message: "host unreachable"),
     ])
 
     #expect(messages == [
         NotificationMessage(
             title: "服务器已离线",
-            body: "服务器 10222 已离线，请检查连接"
+            body: "服务器 10122 已离线，请检查连接"
         ),
         NotificationMessage(
             title: "服务器已恢复",
@@ -48,7 +48,7 @@ import GPUMonitorCore
         ),
         NotificationMessage(
             title: "服务器已离线",
-            body: "服务器 10222 已离线，请检查连接"
+            body: "服务器 10122 已离线，请检查连接"
         ),
     ])
 }
@@ -59,7 +59,7 @@ import GPUMonitorCore
 
 @Test func formatterKeepsFirstEventOrderWhileSeparatingFreeAndBusyGroups() {
     let messages = NotificationFormatter().messages(for: [
-        .serverOffline(server: .server10222, message: "connection timed out"),
+        .serverOffline(server: .server10122, message: "connection timed out"),
         .gpuChanged(
             server: .server10165,
             gpu: .busyGPU(index: 10, pid: 200, name: "train"),
@@ -78,7 +78,7 @@ import GPUMonitorCore
     #expect(messages == [
         NotificationMessage(
             title: "服务器已离线",
-            body: "服务器 10222 已离线，请检查连接"
+            body: "服务器 10122 已离线，请检查连接"
         ),
         NotificationMessage(
             title: "GPU 开始占用",

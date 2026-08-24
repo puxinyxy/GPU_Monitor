@@ -38,17 +38,17 @@ private actor ProbeRecordingRunner: CommandRunning {
         knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts")
     )
 
-    let snapshot = try await probe.sample(server: .server10222)
+    let snapshot = try await probe.sample(server: .server10122)
     let call = await runner.onlyCall
 
-    #expect(snapshot.server == .server10222)
+    #expect(snapshot.server == .server10122)
     #expect(call.executable == "/usr/bin/ssh")
     #expect(call.timeout == .seconds(8))
     #expect(call.arguments == [
         "-T",
         "-F", "/dev/null",
         "-i", "/tmp/gpu_monitor_ed25519",
-        "-p", "10222",
+        "-p", "10122",
         "-o", "BatchMode=yes",
         "-o", "IdentitiesOnly=yes",
         "-o", "PreferredAuthentications=publickey",

@@ -37,7 +37,7 @@ done
 
 if (( has_remote_forward )); then
     if [[ "${GPU_MONITOR_TEST_FORWARD_UNRELATED_FAILURE:-0}" == "1" ]]; then
-        print -u2 'ssh: connect to host 122.207.108.8 port 10222: Connection refused'
+        print -u2 'ssh: connect to host 122.207.108.8 port 10122: Connection refused'
         exit 255
     fi
     [[ "${GPU_MONITOR_TEST_FORWARD_ALLOWED:-0}" == "1" ]] && exit 0

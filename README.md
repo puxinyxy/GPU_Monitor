@@ -4,7 +4,7 @@ GPU Monitor 是 macOS 14 及以上版本的原生菜单栏应用。它每 15 秒
 
 ## 安装
 
-在终端中依次运行以下命令。SSH 配置会分别为端口 `10222` 和 `10165` 请求一次服务器登录密码；密码由系统 `ssh` 直接读取，不进入脚本、配置、日志或应用包。首次连接采用 TOFU，脚本会显示保存到专用 `known_hosts` 的主机指纹，请与服务器管理员提供的指纹核对。
+在终端中依次运行以下命令。SSH 配置会分别为端口 `10122` 和 `10165` 请求一次服务器登录密码；密码由系统 `ssh` 直接读取，不进入脚本、配置、日志或应用包。首次连接采用 TOFU，脚本会显示保存到专用 `known_hosts` 的主机指纹，请与服务器管理员提供的指纹核对。
 
 ```bash
 cd /Users/yxy/Documents/workspace/gpu-monitor
@@ -87,7 +87,7 @@ awk '{print $2}' "$HOME/.ssh/gpu_monitor_ed25519.pub"
 再分别登录两个端口，备份并编辑 `authorized_keys`：
 
 ```bash
-ssh -p 10222 yanxiaoyang@122.207.108.8
+ssh -p 10122 yanxiaoyang@122.207.108.8
 ssh -p 10165 yanxiaoyang@122.207.108.8
 ```
 

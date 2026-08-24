@@ -105,7 +105,7 @@ new_case() {
     local host_remainder="${host_public#* }"
     local host_blob="${host_remainder%% *}"
     {
-        print -r -- "[122.207.108.8]:10222 $host_type $host_blob"
+        print -r -- "[122.207.108.8]:10122 $host_type $host_blob"
         print -r -- "[122.207.108.8]:10165 $host_type $host_blob"
     } > "$case_home/Library/Application Support/GPUMonitor/known_hosts"
 }

@@ -145,7 +145,7 @@ struct GPUMonitorApp: App {
     let store = ConfigurationStore(configURL: root.appending(path: "servers.json"))
     let servers = try store.loadOrCreate()
 
-    #expect(servers.map(\.port) == [10222, 10165])
+    #expect(servers.map(\.port) == [10122, 10165])
     #expect(Set(servers.map(\.host)) == ["122.207.108.8"])
     #expect(Set(servers.map(\.username)) == ["yanxiaoyang"])
     let data = try Data(contentsOf: root.appending(path: "servers.json"))
@@ -216,7 +216,7 @@ public enum MonitorEvent: Equatable, Sendable {
 
 `AppPaths.live()` resolves `~/Library/Application Support/GPUMonitor/servers.json`, `known_hosts`, and `~/.ssh/gpu_monitor_ed25519`. `ConfigurationStore.loadOrCreate()` creates parent directories, writes indented/sorted JSON atomically on first run, and returns the two server records in the approved order.
 
-`TestSupport.swift` defines the exact reusable fixtures used by later tasks: `ServerConfig.fixture`, `.server10222`, `.server10165`, `ServerSnapshot.snapshot(_:)`, `GPUSnapshot.gpu(index:_:)`, `GPUSnapshot.busyGPU(index:pid:name:)`, `validNVIDIAOutput`, `RecordingRunner`, `ControlledProbe`, and `TestError.unreachable`. Keeping these definitions in one file prevents later tests from inventing incompatible fixture types.
+`TestSupport.swift` defines the exact reusable fixtures used by later tasks: `ServerConfig.fixture`, `.server10122`, `.server10165`, `ServerSnapshot.snapshot(_:)`, `GPUSnapshot.gpu(index:_:)`, `GPUSnapshot.busyGPU(index:pid:name:)`, `validNVIDIAOutput`, `RecordingRunner`, `ControlledProbe`, and `TestError.unreachable`. Keeping these definitions in one file prevents later tests from inventing incompatible fixture types.
 
 - [ ] **Step 5: Run the focused test and full build**
 
@@ -518,16 +518,16 @@ git commit -m "feat: query GPU snapshots over restricted SSH"
 ```swift
 @Test func pollRunsServersConcurrentlyAndPreservesSuccessfulServer() async {
     let probe = ControlledProbe(results: [
-        "server-10222": .success(.snapshot(.free)),
+        "server-10122": .success(.snapshot(.free)),
         "server-10165": .failure(TestError.unreachable),
     ], delay: .milliseconds(150))
-    let coordinator = MonitorCoordinator(servers: [.server10222, .server10165], probe: probe)
+    let coordinator = MonitorCoordinator(servers: [.server10122, .server10165], probe: probe)
     let clock = ContinuousClock()
     let elapsed = await clock.measure { _ = await coordinator.poll() }
     let cycle = await coordinator.poll()
 
     #expect(elapsed < .milliseconds(280))
-    #expect(cycle.snapshots["server-10222"] != nil)
+    #expect(cycle.snapshots["server-10122"] != nil)
     #expect(cycle.health["server-10165"] != .online)
 }
 ```
@@ -594,11 +594,11 @@ git commit -m "feat: coordinate concurrent GPU server polling"
 ```swift
 @Test func formatterAggregatesFreeGPUsOnTheSameServer() {
     let messages = NotificationFormatter().messages(for: [
-        .gpuChanged(server: .server10222, gpu: .gpu(index: 0, .free), from: .busy, to: .free),
-        .gpuChanged(server: .server10222, gpu: .gpu(index: 2, .free), from: .busy, to: .free),
+        .gpuChanged(server: .server10122, gpu: .gpu(index: 0, .free), from: .busy, to: .free),
+        .gpuChanged(server: .server10122, gpu: .gpu(index: 2, .free), from: .busy, to: .free),
     ])
     #expect(messages == [
-        NotificationMessage(title: "GPU 已空闲", body: "服务器 10222：GPU 0、GPU 2 已空闲")
+        NotificationMessage(title: "GPU 已空闲", body: "服务器 10122：GPU 0、GPU 2 已空闲")
     ])
 }
 
@@ -792,7 +792,7 @@ codesign --verify --deep --strict --verbose=2 "$app_dir"
 
 - [ ] **Step 3: Add an interactive password-free-source SSH provisioning script**
 
-The script creates `~/.ssh/gpu_monitor_ed25519` if absent, creates the dedicated known-hosts file, then loops over ports `10222` and `10165`. Each initial `ssh` command uses `StrictHostKeyChecking=accept-new`, displays the learned fingerprint, and prompts interactively for the server password.
+The script creates `~/.ssh/gpu_monitor_ed25519` if absent, creates the dedicated known-hosts file, then loops over ports `10122` and `10165`. Each initial `ssh` command uses `StrictHostKeyChecking=accept-new`, displays the learned fingerprint, and prompts interactively for the server password.
 
 Build an authorized-key line with the public key and these restrictions:
 

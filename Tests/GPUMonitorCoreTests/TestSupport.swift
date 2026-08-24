@@ -7,8 +7,8 @@ extension ServerConfig {
         username: "tester", identityFile: "/tmp/gpu_monitor_ed25519"
     )
 
-    static let server10222 = ServerConfig(
-        id: "server-10222", label: "10222", host: "122.207.108.8", port: 10222,
+    static let server10122 = ServerConfig(
+        id: "server-10122", label: "10122", host: "122.207.108.8", port: 10122,
         username: "yanxiaoyang", identityFile: "/tmp/gpu_monitor_ed25519"
     )
     static let server10165 = ServerConfig(

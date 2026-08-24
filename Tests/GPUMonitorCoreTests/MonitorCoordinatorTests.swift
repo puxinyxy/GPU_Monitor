@@ -196,7 +196,7 @@ private actor SequencedProbe: GPUProbing {
     func sample(server: ServerConfig) async throws -> ServerSnapshot {
         sampleCounts[server.id, default: 0] += 1
         let sampleCount = sampleCounts[server.id, default: 0]
-        let delay: Duration = server.id == ServerConfig.server10222.id
+        let delay: Duration = server.id == ServerConfig.server10122.id
             ? .milliseconds(80)
             : .milliseconds(5)
         try await ContinuousClock().sleep(for: delay)
@@ -236,7 +236,7 @@ private actor CancellationGateProbe: GPUProbing {
         await withCheckedContinuation { startedWaiters[generation] = $0 }
     }
 
-    func release(_ generation: Int, server: ServerConfig = .server10222) {
+    func release(_ generation: Int, server: ServerConfig = .server10122) {
         releases.removeValue(forKey: generation)?.resume(returning: .snapshot(.free, server: server))
     }
 
@@ -245,7 +245,7 @@ private actor CancellationGateProbe: GPUProbing {
         releases.removeValue(forKey: generation)?.resume(throwing: CancellationError())
     }
 
-    func releaseAllAndExpireWaiters(server: ServerConfig = .server10222) {
+    func releaseAllAndExpireWaiters(server: ServerConfig = .server10122) {
         let pendingReleases = releases.values
         let pendingWaiters = startedWaiters.values
         releases.removeAll()
@@ -291,10 +291,10 @@ private actor CancellationThenFailureProbe: GPUProbing {
 
 @Test func pollRunsServersConcurrentlyAndPreservesSuccessfulServer() async {
     let probe = ConcurrentBarrierProbe(results: [
-        "server-10222": .success(.snapshot(.free, server: .server10222)),
+        "server-10122": .success(.snapshot(.free, server: .server10122)),
         "server-10165": .failure(ProbeFailure.connectivity),
     ])
-    let coordinator = MonitorCoordinator(servers: [.server10222, .server10165], probe: probe)
+    let coordinator = MonitorCoordinator(servers: [.server10122, .server10165], probe: probe)
     let deadlockGuard = Task {
         try? await ContinuousClock().sleep(for: .milliseconds(500))
         await probe.releaseBlockedSample()
@@ -305,14 +305,14 @@ private actor CancellationThenFailureProbe: GPUProbing {
     await deadlockGuard.value
 
     #expect(await probe.maximumConcurrentSampleCount == 2)
-    #expect(cycle.snapshots["server-10222"] != nil)
-    #expect(cycle.health["server-10222"] == .online)
+    #expect(cycle.snapshots["server-10122"] != nil)
+    #expect(cycle.health["server-10122"] == .online)
     #expect(cycle.health["server-10165"] != .online)
 }
 
 @Test func overlappingPollsShareTheActiveCycle() async {
     let probe = CountingProbe()
-    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
+    let coordinator = MonitorCoordinator(servers: [.server10122], probe: probe)
 
     async let first = coordinator.poll()
     async let second = coordinator.poll()
@@ -325,7 +325,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
 
 @Test func pollCancelledBeforeCoordinatorEntryDoesNotStartAProbe() async {
     let probe = CountingProbe()
-    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
+    let coordinator = MonitorCoordinator(servers: [.server10122], probe: probe)
     let entryGate = CancellationCleanupGate()
     let poll = Task {
         await entryGate.pause()
@@ -347,7 +347,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
     let probe = CancellationGateProbe()
     let cleanupGate = CancellationCleanupGate()
     let coordinator = MonitorCoordinator(
-        servers: [.server10222],
+        servers: [.server10122],
         probe: probe,
         beforeCancellationCleanup: { await cleanupGate.pause() }
     )
@@ -402,7 +402,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
 
 @Test func cancelledProbeDoesNotIncrementServerFailureState() async {
     let probe = CancellationThenFailureProbe()
-    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
+    let coordinator = MonitorCoordinator(servers: [.server10122], probe: probe)
     let cancelledPoll = Task { await coordinator.poll() }
     await probe.waitUntilFirstStarts()
 
@@ -411,7 +411,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
     let failedCycle = await coordinator.poll()
 
     #expect(await probe.sampleCount == 2)
-    #expect(failedCycle.health[ServerConfig.server10222.id] == .degraded(
+    #expect(failedCycle.health[ServerConfig.server10122.id] == .degraded(
         message: ProbeFailure.connectivity.localizedDescription,
         consecutiveFailures: 1
     ))
@@ -419,7 +419,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
 
 @Test func waiterReturningFirstClearsTheCompletedPollBeforeStartingAnother() async {
     let probe = HandoffProbe()
-    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
+    let coordinator = MonitorCoordinator(servers: [.server10122], probe: probe)
     let creatorCleanupGate = CancellationCleanupGate()
     let creatorReturned = OneShotSignal()
     let waiterStartedSecondPoll = OneShotSignal()
@@ -481,7 +481,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
     let probe = SequencedProbe()
     let tracker = StateTracker(confirmationCount: 1, offlineFailureCount: 3)
     let coordinator = MonitorCoordinator(
-        servers: [.server10222, .server10165],
+        servers: [.server10122, .server10165],
         probe: probe,
         tracker: tracker
     )
@@ -491,7 +491,7 @@ private actor CancellationThenFailureProbe: GPUProbing {
 
     #expect(cycle.events == [
         .gpuChanged(
-            server: .server10222,
+            server: .server10122,
             gpu: .gpu(index: 0, .busy),
             from: .free,
             to: .busy
@@ -506,13 +506,13 @@ private actor CancellationThenFailureProbe: GPUProbing {
 }
 
 @Test func failedPollRetainsTheLastSuccessfulSnapshot() async {
-    let coordinator = MonitorCoordinator(servers: [.server10222], probe: FlakyProbe())
+    let coordinator = MonitorCoordinator(servers: [.server10122], probe: FlakyProbe())
     let successfulCycle = await coordinator.poll()
 
     let failedCycle = await coordinator.poll()
 
-    #expect(failedCycle.snapshots["server-10222"] == successfulCycle.snapshots["server-10222"])
-    #expect(failedCycle.health["server-10222"] == .degraded(
+    #expect(failedCycle.snapshots["server-10122"] == successfulCycle.snapshots["server-10122"])
+    #expect(failedCycle.health["server-10122"] == .degraded(
         message: ProbeFailure.connectivity.localizedDescription,
         consecutiveFailures: 1
     ))
@@ -521,23 +521,23 @@ private actor CancellationThenFailureProbe: GPUProbing {
 
 @Test func coordinatorPreservesStructuredNonConnectivityFailureHealth() async {
     let authenticationProbe = ControlledProbe(
-        results: ["server-10222": .failure(ProbeFailure.authentication)],
+        results: ["server-10122": .failure(ProbeFailure.authentication)],
         delay: .zero
     )
     let securityProbe = ControlledProbe(
-        results: ["server-10222": .failure(ProbeFailure.hostKeySecurity)],
+        results: ["server-10122": .failure(ProbeFailure.hostKeySecurity)],
         delay: .zero
     )
-    let authenticationCoordinator = MonitorCoordinator(servers: [.server10222], probe: authenticationProbe)
-    let securityCoordinator = MonitorCoordinator(servers: [.server10222], probe: securityProbe)
+    let authenticationCoordinator = MonitorCoordinator(servers: [.server10122], probe: authenticationProbe)
+    let securityCoordinator = MonitorCoordinator(servers: [.server10122], probe: securityProbe)
 
     let authentication = await authenticationCoordinator.poll()
     let security = await securityCoordinator.poll()
 
-    #expect(authentication.health["server-10222"] == .warning(
+    #expect(authentication.health["server-10122"] == .warning(
         message: ProbeFailure.authentication.localizedDescription
     ))
-    #expect(security.health["server-10222"] == .security(
+    #expect(security.health["server-10122"] == .security(
         message: ProbeFailure.hostKeySecurity.localizedDescription
     ))
     #expect(authentication.events.isEmpty)

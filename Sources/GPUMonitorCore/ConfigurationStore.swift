@@ -27,10 +27,10 @@ public struct ConfigurationStore: Sendable {
     private func approvedServers(identityFile: String) -> [ServerConfig] {
         [
             ServerConfig(
-                id: "server-10222",
-                label: "10222",
+                id: "server-10122",
+                label: "10122",
                 host: "122.207.108.8",
-                port: 10222,
+                port: 10122,
                 username: "yanxiaoyang",
                 identityFile: identityFile
             ),

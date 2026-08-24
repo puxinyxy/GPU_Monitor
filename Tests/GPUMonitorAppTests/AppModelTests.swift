@@ -105,7 +105,7 @@ private actor ControlledCycleSource {
         startedWaiter?.resume()
         startedWaiter = nil
         await withCheckedContinuation { releaseContinuation = $0 }
-        return cycle(snapshots: [:], health: [server10222.id: .unknown])
+        return cycle(snapshots: [:], health: [server10122.id: .unknown])
     }
 
     func waitUntilStarted() async {
@@ -395,11 +395,11 @@ private actor CancellationControlledPoll {
     }
 }
 
-private let server10222 = ServerConfig(
-    id: "server-10222",
-    label: "10222",
+private let server10122 = ServerConfig(
+    id: "server-10122",
+    label: "10122",
     host: "example.invalid",
-    port: 10222,
+    port: 10122,
     username: "tester",
     identityFile: "/tmp/test-key"
 )
@@ -444,8 +444,8 @@ func refreshReReadsNotificationAuthorizationAfterSettingsChange() async {
     let notifications = FakeNotifications()
     let authorization = MutableAuthorizationProvider(state: .authorized)
     let model = AppModel(
-        servers: [server10222],
-        poll: { cycle(snapshots: [:], health: [server10222.id: .online]) },
+        servers: [server10122],
+        poll: { cycle(snapshots: [:], health: [server10122.id: .online]) },
         notifications: notifications,
         authorizationProvider: authorization,
         sleep: { _ in throw CancellationError() }
@@ -467,7 +467,7 @@ func overlappingAuthorizationRefreshesShareOneProviderRead() async {
     let notifications = FakeNotifications()
     let authorization = ControlledAuthorizationStateProvider()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { cycle(snapshots: [:], health: [:]) },
         notifications: notifications,
         authorizationProvider: authorization,
@@ -492,7 +492,7 @@ func stoppedModelDiscardsLateAuthorizationState() async {
     let notifications = FakeNotifications()
     let authorization = ControlledAuthorizationStateProvider()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { cycle(snapshots: [:], health: [:]) },
         notifications: notifications,
         authorizationProvider: authorization,
@@ -513,7 +513,7 @@ func stopDoesNotWaitForNonCooperativeAuthorizationStateRead() async {
     let notifications = FakeNotifications()
     let authorization = ControlledAuthorizationStateProvider()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { cycle(snapshots: [:], health: [:]) },
         notifications: notifications,
         authorizationProvider: authorization,
@@ -541,14 +541,14 @@ func stopDoesNotWaitForNonCooperativeAuthorizationStateRead() async {
 @Test @MainActor
 func startRequestsAuthorizationAndPollsExactlyOnceAcrossRepeatedCalls() async {
     let firstCycle = cycle(
-        snapshots: [server10222.id: snapshot(server: server10222, gpus: [gpu(index: 0, busy: false)])],
-        health: [server10222.id: .online]
+        snapshots: [server10122.id: snapshot(server: server10122, gpus: [gpu(index: 0, busy: false)])],
+        health: [server10122.id: .online]
     )
     let source = CycleSource([firstCycle])
     let notifications = FakeNotifications(requestedState: .denied)
     let sleeper = ControlledSleeper()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { await source.poll() },
         notifications: notifications,
         authorizationProvider: notifications,
@@ -572,7 +572,7 @@ func timerDoesNotStartUntilAuthorizationAndInitialRefreshFinish() async {
     let notifications = ControlledAuthorizationNotifications()
     let sleeper = ControlledSleeper()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { await source.poll() },
         notifications: notifications,
         authorizationProvider: notifications,
@@ -600,12 +600,12 @@ func timerDoesNotStartUntilAuthorizationAndInitialRefreshFinish() async {
 
 @Test @MainActor
 func timerUsesOneFifteenSecondLoopAndStopPreventsAnotherPoll() async {
-    let firstCycle = cycle(snapshots: [:], health: [server10222.id: .unknown])
+    let firstCycle = cycle(snapshots: [:], health: [server10122.id: .unknown])
     let source = CycleSource([firstCycle])
     let notifications = FakeNotifications()
     let sleeper = ControlledSleeper()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { await source.poll() },
         notifications: notifications,
         authorizationProvider: notifications,
@@ -627,14 +627,14 @@ func timerUsesOneFifteenSecondLoopAndStopPreventsAnotherPoll() async {
 
 @Test @MainActor
 func refreshMergesSnapshotsPreservesOrderAndReportsDeliveryFailure() async {
-    let previous = snapshot(server: server10222, gpus: [gpu(index: 0, busy: false)])
+    let previous = snapshot(server: server10122, gpus: [gpu(index: 0, busy: false)])
     let updated = snapshot(server: server10165, gpus: [gpu(index: 1, busy: true)])
-    let event = MonitorEvent.serverOffline(server: server10222, message: "timed out")
+    let event = MonitorEvent.serverOffline(server: server10122, message: "timed out")
     let source = CycleSource([
-        cycle(snapshots: [server10222.id: previous], health: [server10222.id: .online]),
+        cycle(snapshots: [server10122.id: previous], health: [server10122.id: .online]),
         cycle(
             snapshots: [server10165.id: updated],
-            health: [server10222.id: .degraded(message: "timed out", consecutiveFailures: 1), server10165.id: .online],
+            health: [server10122.id: .degraded(message: "timed out", consecutiveFailures: 1), server10165.id: .online],
             events: [event]
         ),
     ])
@@ -644,7 +644,7 @@ func refreshMergesSnapshotsPreservesOrderAndReportsDeliveryFailure() async {
         failures: [.init(messageIndex: 0, reason: .schedulingFailed)]
     ))
     let model = AppModel(
-        servers: [server10222, server10165],
+        servers: [server10122, server10165],
         poll: { await source.poll() },
         notifications: notifications,
         authorizationProvider: notifications,
@@ -654,8 +654,8 @@ func refreshMergesSnapshotsPreservesOrderAndReportsDeliveryFailure() async {
     await model.refresh()
     await model.refresh()
 
-    #expect(model.servers.map(\.id) == [server10222.id, server10165.id])
-    #expect(model.snapshots[server10222.id] == previous)
+    #expect(model.servers.map(\.id) == [server10122.id, server10165.id])
+    #expect(model.snapshots[server10122.id] == previous)
     #expect(model.snapshots[server10165.id] == updated)
     #expect(model.recentErrorSummary == "通知发送失败：1 条")
     #expect(await notifications.sentEvents.last == [event])
@@ -665,7 +665,7 @@ func refreshMergesSnapshotsPreservesOrderAndReportsDeliveryFailure() async {
 func summaryAndColorRepresentUnknownWarningOfflineFreeAndBusyStates() async {
     let notifications = FakeNotifications()
     let model = AppModel(
-        servers: [server10222, server10165],
+        servers: [server10122, server10165],
         poll: { cycle(snapshots: [:], health: [:]) },
         notifications: notifications,
         authorizationProvider: notifications,
@@ -677,44 +677,44 @@ func summaryAndColorRepresentUnknownWarningOfflineFreeAndBusyStates() async {
 
     model.applyForTesting(cycle(
         snapshots: [
-            server10222.id: snapshot(server: server10222, gpus: [gpu(index: 0, busy: false)]),
+            server10122.id: snapshot(server: server10122, gpus: [gpu(index: 0, busy: false)]),
             server10165.id: snapshot(server: server10165, gpus: [gpu(index: 1, busy: true)]),
         ],
-        health: [server10222.id: .online, server10165.id: .online]
+        health: [server10122.id: .online, server10165.id: .online]
     ))
     #expect(model.menuTitle == "GPU 1/2 空闲")
     #expect(model.menuStatus == .available)
 
     model.applyForTesting(cycle(
         snapshots: [:],
-        health: [server10222.id: .online, server10165.id: .unknown]
+        health: [server10122.id: .online, server10165.id: .unknown]
     ))
     #expect(model.menuStatus == .unknown)
 
     model.applyForTesting(cycle(
         snapshots: [:],
-        health: [server10222.id: .degraded(message: "timeout", consecutiveFailures: 1), server10165.id: .online]
+        health: [server10122.id: .degraded(message: "timeout", consecutiveFailures: 1), server10165.id: .online]
     ))
     #expect(model.menuStatus == .warning)
-    #expect(model.recentErrorSummary == "服务器 10222：timeout")
+    #expect(model.recentErrorSummary == "服务器 10122：timeout")
 
     model.applyForTesting(cycle(
         snapshots: [:],
-        health: [server10222.id: .warning(message: "authentication failed"), server10165.id: .online]
+        health: [server10122.id: .warning(message: "authentication failed"), server10165.id: .online]
     ))
     #expect(model.menuStatus == .warning)
-    #expect(model.recentErrorSummary == "服务器 10222：authentication failed")
+    #expect(model.recentErrorSummary == "服务器 10122：authentication failed")
 
     model.applyForTesting(cycle(
         snapshots: [:],
-        health: [server10222.id: .security(message: "host key mismatch"), server10165.id: .online]
+        health: [server10122.id: .security(message: "host key mismatch"), server10165.id: .online]
     ))
     #expect(model.menuStatus == .security)
-    #expect(model.recentErrorSummary == "服务器 10222：host key mismatch")
+    #expect(model.recentErrorSummary == "服务器 10122：host key mismatch")
 
     model.applyForTesting(cycle(
         snapshots: [:],
-        health: [server10222.id: .offline(message: "unreachable"), server10165.id: .online]
+        health: [server10122.id: .offline(message: "unreachable"), server10165.id: .online]
     ))
     #expect(model.menuStatus == .offline)
 }
@@ -744,7 +744,7 @@ func stopCancelsAndWaitsForAnActiveRefresh() async {
     let poll = CancellationControlledPoll()
     let notifications = FakeNotifications()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { await poll.poll() },
         cancelPoll: { await poll.cancelActivePoll() },
         notifications: notifications,
@@ -769,7 +769,7 @@ func stopCancelsStartupBeforeItCanPollOrInstallTheTimer() async {
     let notifications = CancellationAwareAuthorizationNotifications()
     let sleeper = ControlledSleeper()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { await source.poll() },
         notifications: notifications,
         authorizationProvider: notifications,
@@ -793,7 +793,7 @@ func stopIsTerminalAndSharesShutdownAcrossReentrantLifecycleCalls() async {
     let notifications = FakeNotifications()
     let sleeper = ControlledSleeper()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { await poll.poll() },
         cancelPoll: { await poll.cancelActivePoll() },
         notifications: notifications,
@@ -848,7 +848,7 @@ func completedStopPermanentlyRejectsStartAndRefresh() async {
     let notifications = FakeNotifications()
     let sleeper = ControlledSleeper()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { await source.poll() },
         notifications: notifications,
         authorizationProvider: notifications,
@@ -870,7 +870,7 @@ func stopDoesNotWaitForNonCooperativeAuthorization() async {
     let notifications = NonCooperativeAuthorizationNotifications()
     let sleeper = ControlledSleeper()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { await source.poll() },
         notifications: notifications,
         authorizationProvider: notifications,
@@ -901,13 +901,13 @@ func stopDoesNotWaitForNonCooperativeAuthorization() async {
 @Test @MainActor
 func stopDoesNotWaitForNonCooperativeNotificationDeliveryOrApplyItsLateResult() async {
     let completedCycle = cycle(
-        snapshots: [server10222.id: snapshot(server: server10222, gpus: [gpu(index: 0, busy: false)])],
-        health: [server10222.id: .online]
+        snapshots: [server10122.id: snapshot(server: server10122, gpus: [gpu(index: 0, busy: false)])],
+        health: [server10122.id: .online]
     )
     let source = CycleSource([completedCycle])
     let notifications = NonCooperativeDeliveryNotifications()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: { await source.poll() },
         notifications: notifications,
         authorizationProvider: notifications,
@@ -942,10 +942,10 @@ func stopDoesNotWaitForNonCooperativeNotificationDeliveryOrApplyItsLateResult() 
 func stopBeforeCoordinatorRegistrationPreventsTheCancelledRefreshFromStartingAProbe() async {
     let gate = PreRegistrationPollGate()
     let probe = AppCountingProbe()
-    let coordinator = MonitorCoordinator(servers: [server10222], probe: probe)
+    let coordinator = MonitorCoordinator(servers: [server10122], probe: probe)
     let notifications = FakeNotifications()
     let model = AppModel(
-        servers: [server10222],
+        servers: [server10122],
         poll: {
             await gate.pause()
             return await coordinator.poll()

@@ -10,7 +10,7 @@
 
 | 标识 | 地址 | SSH 端口 | 用户名 |
 | --- | --- | ---: | --- |
-| `server-10222` | `122.207.108.8` | `10222` | `yanxiaoyang` |
+| `server-10122` | `122.207.108.8` | `10122` | `yanxiaoyang` |
 | `server-10165` | `122.207.108.8` | `10165` | `yanxiaoyang` |
 
 密码只在首次部署专用 SSH 公钥时使用，不进入源码、配置文件、日志或最终应用包。
@@ -26,7 +26,7 @@ GPU 5/8 空闲
 点击菜单栏图标后，弹出按服务器分组的状态面板：
 
 ```text
-服务器 10222    在线
+服务器 10122    在线
 GPU 0  空闲       0%    120 MiB / 24 GiB   35°C
 GPU 1  占用      92%     18 GiB / 24 GiB   71°C
 
@@ -89,7 +89,7 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 首版的 `MacOSNotificationSink` 使用 `UserNotifications`。应用启动前安装并强引用 `UNUserNotificationCenterDelegate`，使应用位于前台时通知仍以 banner/list 展示并播放系统提示音。通知权限会在每次刷新、菜单面板每次呈现及应用重新激活时重新读取；并发读取合并为一个任务，菜单关闭会取消对应的 SwiftUI view task，停止后返回的旧结果会被丢弃。同一服务器在同一次采样中有多张 GPU 变化时合并为一条通知，例如：
 
 ```text
-服务器 10222：GPU 0、GPU 2 已空闲
+服务器 10122：GPU 0、GPU 2 已空闲
 服务器 10165：GPU 1 开始占用（python，PID 12345）
 ```
 

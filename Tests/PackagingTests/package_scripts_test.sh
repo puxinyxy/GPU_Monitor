@@ -67,6 +67,7 @@ menu_view="$project_dir/Sources/GPUMonitorApp/MenuContentView.swift"
 lifecycle_delegate="$project_dir/Sources/GPUMonitorApp/AppLifecycleDelegate.swift"
 notification_sink="$project_dir/Sources/GPUMonitorNotifications/MacOSNotificationSink.swift"
 install_behavior_test="$project_dir/Tests/PackagingTests/install_app_behavior_test.sh"
+stale_first_port='102''22'
 
 check "package script uses exact app path guard" file_contains "$package_script" '[[ "$app_dir" == "$project_dir/dist/GPU Monitor.app" ]] || exit 2'
 check "package script removes only its exact bundle" file_contains "$package_script" 'rm -rf "$app_dir"'
@@ -118,8 +119,9 @@ check "provisioner uses the dedicated SSH directory" file_contains "$provision_s
 check "provisioner uses the dedicated identity" file_contains "$provision_script" 'identity_file="$ssh_dir/gpu_monitor_ed25519"'
 check "provisioner uses the dedicated application-support directory" file_contains "$provision_script" 'app_support_dir="$HOME/Library/Application Support/GPUMonitor"'
 check "provisioner uses the dedicated known-hosts file" file_contains "$provision_script" 'known_hosts="$app_support_dir/known_hosts"'
-check "provisioner covers port 10222" file_contains "$provision_script" '10222'
+check "provisioner covers port 10122" file_contains "$provision_script" '10122'
 check "provisioner covers port 10165" file_contains "$provision_script" '10165'
+check "provisioner rejects the stale first-server port" file_not_contains "$provision_script" "$stale_first_port"
 check "first connection accepts only new host keys" file_contains "$provision_script" 'StrictHostKeyChecking=accept-new'
 check "verification is noninteractive" file_contains "$provision_script" 'BatchMode=yes'
 check "forced-command test requests a forbidden shell command" file_contains "$provision_script" 'echo SHOULD_NOT_RUN'
@@ -133,6 +135,8 @@ check "provisioner validates full monitor output" file_contains "$provision_scri
 check "provisioner reports a learned fingerprint" file_contains "$provision_script" 'ssh-keygen -lf'
 
 check "README has exact repository command" file_contains "$readme" 'cd /Users/yxy/Documents/workspace/gpu-monitor'
+check "README documents the exact approved ports" file_contains "$readme" '`10122` 和 `10165`'
+check "README rejects the stale first-server port" file_not_contains "$readme" "$stale_first_port"
 check "README has exact provision command" file_contains "$readme" './scripts/provision_ssh.sh'
 check "README has exact test command" file_contains "$readme" 'swift run GPUMonitorCoreTestsRunner'
 check "README has app test command" file_contains "$readme" 'swift run GPUMonitorAppTestsRunner'
