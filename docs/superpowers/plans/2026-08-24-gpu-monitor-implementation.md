@@ -6,7 +6,7 @@
 
 **Architecture:** A Swift Package contains a platform-neutral `GPUMonitorCore` library and a SwiftUI/AppKit `GPUMonitor` executable. The core owns configuration, NVIDIA output parsing, state confirmation, SSH execution, and concurrent polling; the app owns the menu-bar UI and `UserNotifications` adapter. A dedicated restricted SSH key permits only the fixed `nvidia-smi` probe.
 
-**Tech Stack:** Swift 6.3 in Swift 5 language mode, Swift Package Manager, SwiftUI, AppKit, UserNotifications, Foundation `Process`, XCTest, OpenSSH, shell packaging scripts, ad-hoc code signing.
+**Tech Stack:** Swift 6.3 in Swift 5 language mode, Swift Package Manager, SwiftUI, AppKit, UserNotifications, Foundation `Process`, Swift Testing, OpenSSH, shell packaging scripts, ad-hoc code signing.
 
 ## Global Constraints
 
@@ -20,6 +20,7 @@
 - Use a dedicated no-passphrase Ed25519 key whose remote authorization forces the fixed GPU query and disables forwarding and PTY allocation.
 - Use macOS system notifications in v1 and keep notification delivery behind a `NotificationSink` interface for later WeChat integration.
 - Keep source, design, plan, and documentation under `/Users/yxy/Documents/workspace/gpu-monitor`.
+- Use Swift Testing rather than XCTest because this Mac has Command Line Tools without `XCTest.framework`; the test target must add `/Library/Developer/CommandLineTools/Library/Developer/Frameworks` as both a framework search path and runtime rpath.
 
 ---
 
@@ -87,6 +88,8 @@ gpu-monitor/
 // swift-tools-version: 6.0
 import PackageDescription
 
+let developerFrameworks = "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"
+
 let package = Package(
     name: "GPUMonitor",
     platforms: [.macOS(.v14)],
@@ -97,7 +100,15 @@ let package = Package(
     targets: [
         .target(name: "GPUMonitorCore"),
         .executableTarget(name: "GPUMonitorApp", dependencies: ["GPUMonitorCore"]),
-        .testTarget(name: "GPUMonitorCoreTests", dependencies: ["GPUMonitorCore"]),
+        .testTarget(
+            name: "GPUMonitorCoreTests",
+            dependencies: ["GPUMonitorCore"],
+            swiftSettings: [.unsafeFlags(["-F", developerFrameworks])],
+            linkerSettings: [.unsafeFlags([
+                "-F", developerFrameworks,
+                "-Xlinker", "-rpath", "-Xlinker", developerFrameworks,
+            ])]
+        ),
     ],
     swiftLanguageModes: [.v5]
 )
@@ -120,16 +131,16 @@ struct GPUMonitorApp: App {
 - [ ] **Step 2: Write the failing configuration test**
 
 ```swift
-func testLoadOrCreateWritesTheTwoApprovedServersWithoutPasswords() throws {
+@Test func loadOrCreateWritesTheTwoApprovedServersWithoutPasswords() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     let store = ConfigurationStore(configURL: root.appending(path: "servers.json"))
     let servers = try store.loadOrCreate()
 
-    XCTAssertEqual(servers.map(\.port), [10222, 10165])
-    XCTAssertEqual(Set(servers.map(\.host)), ["122.207.108.8"])
-    XCTAssertEqual(Set(servers.map(\.username)), ["yanxiaoyang"])
+    #expect(servers.map(\.port) == [10222, 10165])
+    #expect(Set(servers.map(\.host)) == ["122.207.108.8"])
+    #expect(Set(servers.map(\.username)) == ["yanxiaoyang"])
     let data = try Data(contentsOf: root.appending(path: "servers.json"))
-    XCTAssertFalse(String(decoding: data, as: UTF8.self).localizedCaseInsensitiveContains("password"))
+    #expect(!String(decoding: data, as: UTF8.self).localizedCaseInsensitiveContains("password"))
 }
 ```
 
@@ -194,7 +205,7 @@ public enum MonitorEvent: Equatable, Sendable {
 
 `AppPaths.live()` resolves `~/Library/Application Support/GPUMonitor/servers.json`, `known_hosts`, and `~/.ssh/gpu_monitor_ed25519`. `ConfigurationStore.loadOrCreate()` creates parent directories, writes indented/sorted JSON atomically on first run, and returns the two server records in the approved order.
 
-`TestSupport.swift` defines the exact reusable fixtures used by later tasks: `ServerConfig.fixture`, `.server10222`, `.server10165`, `ServerSnapshot.snapshot(_:)`, `GPUSnapshot.gpu(index:_:)`, `GPUSnapshot.busyGPU(index:pid:name:)`, `validNVIDIAOutput`, `RecordingRunner`, `ControlledProbe`, `TestError.unreachable`, and an async `XCTAssertThrowsAsyncError` helper. Keeping these definitions in one file prevents later tests from inventing incompatible fixture types.
+`TestSupport.swift` defines the exact reusable fixtures used by later tasks: `ServerConfig.fixture`, `.server10222`, `.server10165`, `ServerSnapshot.snapshot(_:)`, `GPUSnapshot.gpu(index:_:)`, `GPUSnapshot.busyGPU(index:pid:name:)`, `validNVIDIAOutput`, `RecordingRunner`, `ControlledProbe`, and `TestError.unreachable`. Keeping these definitions in one file prevents later tests from inventing incompatible fixture types.
 
 - [ ] **Step 5: Run the focused test and full build**
 
@@ -231,15 +242,17 @@ __GPU_MONITOR_PROCESSES__
 GPU-b, 12345, python, 18100
 """
 
-func testParseAssociatesProcessesByGPUUUID() throws {
+@Test func parseAssociatesProcessesByGPUUUID() throws {
     let result = try NVIDIAOutputParser().parse(sample, server: .fixture, capturedAt: .distantPast)
-    XCTAssertEqual(result.gpus.count, 2)
-    XCTAssertEqual(result.gpus[0].occupancy, .free)
-    XCTAssertEqual(result.gpus[1].processes, [.init(pid: 12345, name: "python", usedMemoryMiB: 18100)])
+    #expect(result.gpus.count == 2)
+    #expect(result.gpus[0].occupancy == .free)
+    #expect(result.gpus[1].processes == [.init(pid: 12345, name: "python", usedMemoryMiB: 18100)])
 }
 
-func testParseRejectsMissingMarker() {
-    XCTAssertThrowsError(try NVIDIAOutputParser().parse("0, GPU-a", server: .fixture, capturedAt: .distantPast))
+@Test func parseRejectsMissingMarker() {
+    #expect(throws: (any Error).self) {
+        try NVIDIAOutputParser().parse("0, GPU-a", server: .fixture, capturedAt: .distantPast)
+    }
 }
 ```
 
@@ -300,23 +313,23 @@ git commit -m "feat: parse NVIDIA GPU and process snapshots"
 - [ ] **Step 1: Write state transition tests**
 
 ```swift
-func testFirstSuccessIsSilentAndSecondMatchingChangeNotifies() async {
+@Test func firstSuccessIsSilentAndSecondMatchingChangeNotifies() async {
     let tracker = StateTracker(confirmationCount: 2, offlineFailureCount: 3)
-    XCTAssertTrue(await tracker.recordSuccess(.snapshot(.free)).events.isEmpty)
-    XCTAssertTrue(await tracker.recordSuccess(.snapshot(.busy)).events.isEmpty)
+    #expect(await tracker.recordSuccess(.snapshot(.free)).events.isEmpty)
+    #expect(await tracker.recordSuccess(.snapshot(.busy)).events.isEmpty)
     let update = await tracker.recordSuccess(.snapshot(.busy))
-    XCTAssertEqual(update.events.count, 1)
+    #expect(update.events.count == 1)
 }
 
-func testThreeFailuresNotifyOnceAndRecoveryRebaselinesWithoutGPUChange() async {
+@Test func threeFailuresNotifyOnceAndRecoveryRebaselinesWithoutGPUChange() async {
     let tracker = StateTracker(confirmationCount: 2, offlineFailureCount: 3)
     _ = await tracker.recordSuccess(.snapshot(.free))
-    XCTAssertTrue(await tracker.recordFailure(server: .fixture, message: "timeout").events.isEmpty)
-    XCTAssertTrue(await tracker.recordFailure(server: .fixture, message: "timeout").events.isEmpty)
-    XCTAssertEqual(await tracker.recordFailure(server: .fixture, message: "timeout").events,
-                   [.serverOffline(server: .fixture, message: "timeout")])
-    XCTAssertEqual(await tracker.recordSuccess(.snapshot(.busy)).events,
-                   [.serverRecovered(server: .fixture)])
+    #expect(await tracker.recordFailure(server: .fixture, message: "timeout").events.isEmpty)
+    #expect(await tracker.recordFailure(server: .fixture, message: "timeout").events.isEmpty)
+    #expect(await tracker.recordFailure(server: .fixture, message: "timeout").events ==
+            [.serverOffline(server: .fixture, message: "timeout")])
+    #expect(await tracker.recordSuccess(.snapshot(.busy)).events ==
+            [.serverRecovered(server: .fixture)])
 }
 ```
 
@@ -383,32 +396,34 @@ git commit -m "feat: track confirmed GPU and server state changes"
 - [ ] **Step 1: Write command-runner timeout and output tests**
 
 ```swift
-func testCommandRunnerCapturesOutput() async throws {
+@Test func commandRunnerCapturesOutput() async throws {
     let result = try await CommandRunner().run(
         executable: "/bin/echo", arguments: ["hello"], timeout: .seconds(1))
-    XCTAssertEqual(result.exitCode, 0)
-    XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "hello")
+    #expect(result.exitCode == 0)
+    #expect(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "hello")
 }
 
-func testCommandRunnerTerminatesAfterTimeout() async {
-    await XCTAssertThrowsAsyncError(try await CommandRunner().run(
-        executable: "/bin/sleep", arguments: ["2"], timeout: .milliseconds(100)))
+@Test func commandRunnerTerminatesAfterTimeout() async {
+    await #expect(throws: (any Error).self) {
+        try await CommandRunner().run(
+            executable: "/bin/sleep", arguments: ["2"], timeout: .milliseconds(100))
+    }
 }
 ```
 
 - [ ] **Step 2: Write an SSH argument-construction test using a fake runner**
 
 ```swift
-func testProbeUsesPinnedKnownHostsBatchModeAndNoRemoteCommand() async throws {
+@Test func probeUsesPinnedKnownHostsBatchModeAndNoRemoteCommand() async throws {
     let runner = RecordingRunner(stdout: validNVIDIAOutput)
     let probe = SSHGPUProbe(runner: runner, knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts"))
     _ = try await probe.sample(server: .fixture)
     let call = await runner.onlyCall
-    XCTAssertEqual(call.executable, "/usr/bin/ssh")
-    XCTAssertTrue(call.arguments.contains("BatchMode=yes"))
-    XCTAssertTrue(call.arguments.contains("StrictHostKeyChecking=yes"))
-    XCTAssertTrue(call.arguments.contains("UserKnownHostsFile=/tmp/known_hosts"))
-    XCTAssertEqual(call.arguments.last, "yanxiaoyang@122.207.108.8")
+    #expect(call.executable == "/usr/bin/ssh")
+    #expect(call.arguments.contains("BatchMode=yes"))
+    #expect(call.arguments.contains("StrictHostKeyChecking=yes"))
+    #expect(call.arguments.contains("UserKnownHostsFile=/tmp/known_hosts"))
+    #expect(call.arguments.last == "yanxiaoyang@122.207.108.8")
 }
 ```
 
@@ -484,7 +499,7 @@ git commit -m "feat: query GPU snapshots over restricted SSH"
 - [ ] **Step 1: Write a concurrency and partial-failure test**
 
 ```swift
-func testPollRunsServersConcurrentlyAndPreservesSuccessfulServer() async {
+@Test func pollRunsServersConcurrentlyAndPreservesSuccessfulServer() async {
     let probe = ControlledProbe(results: [
         "server-10222": .success(.snapshot(.free)),
         "server-10165": .failure(TestError.unreachable),
@@ -494,9 +509,9 @@ func testPollRunsServersConcurrentlyAndPreservesSuccessfulServer() async {
     let elapsed = await clock.measure { _ = await coordinator.poll() }
     let cycle = await coordinator.poll()
 
-    XCTAssertLessThan(elapsed, .milliseconds(280))
-    XCTAssertNotNil(cycle.snapshots["server-10222"])
-    XCTAssertNotEqual(cycle.health["server-10165"], .online)
+    #expect(elapsed < .milliseconds(280))
+    #expect(cycle.snapshots["server-10222"] != nil)
+    #expect(cycle.health["server-10165"] != .online)
 }
 ```
 
@@ -560,21 +575,21 @@ git commit -m "feat: coordinate concurrent GPU server polling"
 - [ ] **Step 1: Write aggregation tests**
 
 ```swift
-func testFormatterAggregatesFreeGPUsOnTheSameServer() {
+@Test func formatterAggregatesFreeGPUsOnTheSameServer() {
     let messages = NotificationFormatter().messages(for: [
         .gpuChanged(server: .server10222, gpu: .gpu(index: 0, .free), from: .busy, to: .free),
         .gpuChanged(server: .server10222, gpu: .gpu(index: 2, .free), from: .busy, to: .free),
     ])
-    XCTAssertEqual(messages, [
+    #expect(messages == [
         NotificationMessage(title: "GPU 已空闲", body: "服务器 10222：GPU 0、GPU 2 已空闲")
     ])
 }
 
-func testFormatterIncludesProcessForBusyGPU() {
+@Test func formatterIncludesProcessForBusyGPU() {
     let messages = NotificationFormatter().messages(for: [
         .gpuChanged(server: .server10165, gpu: .busyGPU(index: 1, pid: 12345, name: "python"), from: .free, to: .busy)
     ])
-    XCTAssertEqual(messages[0].body, "服务器 10165：GPU 1 开始占用（python，PID 12345）")
+    #expect(messages[0].body == "服务器 10165：GPU 1 开始占用（python，PID 12345）")
 }
 ```
 
