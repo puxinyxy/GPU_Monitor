@@ -3,9 +3,8 @@ import GPUMonitorCore
 
 private actor WeChatStyleSink: NotificationSink {
     func send(events: [MonitorEvent]) async -> NotificationDeliveryResult {
-        NotificationDeliveryResult(
+        try! NotificationDeliveryResult(
             attemptedCount: events.count,
-            deliveredCount: events.count,
             failures: []
         )
     }
@@ -39,10 +38,9 @@ private actor TestAuthorizationProvider: NotificationAuthorizationProviding {
     #expect(await provider.requestAuthorization() == .denied)
 }
 
-@Test func deliveryResultReportsFailuresWithoutUnderlyingErrorDetails() {
-    let result = NotificationDeliveryResult(
+@Test func deliveryResultReportsFailuresWithoutUnderlyingErrorDetails() throws {
+    let result = try NotificationDeliveryResult(
         attemptedCount: 3,
-        deliveredCount: 1,
         failures: [
             NotificationDeliveryFailure(messageIndex: 0, reason: .schedulingFailed),
             NotificationDeliveryFailure(messageIndex: 2, reason: .schedulingFailed),
@@ -52,4 +50,48 @@ private actor TestAuthorizationProvider: NotificationAuthorizationProviding {
     #expect(result.failedCount == 2)
     #expect(!result.isSuccess)
     #expect(result.failures.map(\.messageIndex) == [0, 2])
+}
+
+@Test func deliveryResultDerivesDeliveredCountFromValidatedUniqueFailures() throws {
+    let result = try NotificationDeliveryResult(
+        attemptedCount: 4,
+        failures: [
+            NotificationDeliveryFailure(messageIndex: 1, reason: .schedulingFailed),
+            NotificationDeliveryFailure(messageIndex: 3, reason: .schedulingFailed),
+        ]
+    )
+
+    #expect(result.attemptedCount == 4)
+    #expect(result.deliveredCount == 2)
+    #expect(result.failedCount == 2)
+}
+
+@Test func deliveryResultRejectsNegativeAttemptedCount() {
+    #expect(throws: NotificationDeliveryResultValidationError.negativeAttemptedCount) {
+        try NotificationDeliveryResult(attemptedCount: -1, failures: [])
+    }
+}
+
+@Test func deliveryResultRejectsOutOfRangeAndDuplicateFailureIndices() {
+    #expect(throws: NotificationDeliveryResultValidationError.failureIndexOutOfRange(-1)) {
+        try NotificationDeliveryResult(
+            attemptedCount: 1,
+            failures: [.init(messageIndex: -1, reason: .schedulingFailed)]
+        )
+    }
+    #expect(throws: NotificationDeliveryResultValidationError.failureIndexOutOfRange(1)) {
+        try NotificationDeliveryResult(
+            attemptedCount: 1,
+            failures: [.init(messageIndex: 1, reason: .schedulingFailed)]
+        )
+    }
+    #expect(throws: NotificationDeliveryResultValidationError.duplicateFailureIndex(0)) {
+        try NotificationDeliveryResult(
+            attemptedCount: 2,
+            failures: [
+                .init(messageIndex: 0, reason: .schedulingFailed),
+                .init(messageIndex: 0, reason: .schedulingFailed),
+            ]
+        )
+    }
 }

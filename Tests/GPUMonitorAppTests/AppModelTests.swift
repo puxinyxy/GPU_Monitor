@@ -11,9 +11,8 @@ private actor FakeNotifications: NotificationSink, NotificationAuthorizationProv
 
     init(
         requestedState: NotificationAuthorizationState = .authorized,
-        deliveryResult: NotificationDeliveryResult = .init(
+        deliveryResult: NotificationDeliveryResult = try! .init(
             attemptedCount: 0,
-            deliveredCount: 0,
             failures: []
         )
     ) {
@@ -162,7 +161,7 @@ private actor ControlledAuthorizationNotifications: NotificationSink, Notificati
     func authorizationState() async -> NotificationAuthorizationState { .notDetermined }
 
     func send(events: [MonitorEvent]) async -> NotificationDeliveryResult {
-        .init(attemptedCount: 0, deliveredCount: 0, failures: [])
+        try! .init(attemptedCount: 0, failures: [])
     }
 
     func waitUntilAuthorizationStarts() async {
@@ -198,7 +197,7 @@ private actor CancellationAwareAuthorizationNotifications: NotificationSink, Not
     func authorizationState() async -> NotificationAuthorizationState { .notDetermined }
 
     func send(events: [MonitorEvent]) async -> NotificationDeliveryResult {
-        .init(attemptedCount: 0, deliveredCount: 0, failures: [])
+        try! .init(attemptedCount: 0, failures: [])
     }
 
     func waitUntilStarted() async {
@@ -230,7 +229,7 @@ private actor NonCooperativeAuthorizationNotifications: NotificationSink, Notifi
     func authorizationState() async -> NotificationAuthorizationState { .notDetermined }
 
     func send(events: [MonitorEvent]) async -> NotificationDeliveryResult {
-        .init(attemptedCount: 0, deliveredCount: 0, failures: [])
+        try! .init(attemptedCount: 0, failures: [])
     }
 
     func waitUntilStarted() async {
@@ -266,9 +265,8 @@ private actor NonCooperativeDeliveryNotifications: NotificationSink, Notificatio
     }
 
     func release() {
-        deliveryContinuation?.resume(returning: .init(
+        deliveryContinuation?.resume(returning: try! .init(
             attemptedCount: 0,
-            deliveredCount: 0,
             failures: []
         ))
         deliveryContinuation = nil
@@ -661,9 +659,8 @@ func refreshMergesSnapshotsPreservesOrderAndReportsDeliveryFailure() async {
             events: [event]
         ),
     ])
-    let notifications = FakeNotifications(deliveryResult: .init(
+    let notifications = FakeNotifications(deliveryResult: try! .init(
         attemptedCount: 1,
-        deliveredCount: 0,
         failures: [.init(messageIndex: 0, reason: .schedulingFailed)]
     ))
     let model = AppModel(

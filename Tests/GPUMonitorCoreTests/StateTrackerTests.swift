@@ -221,6 +221,64 @@ func ordinaryProbeFailuresRemainWarningsWithoutOfflineEvents(_ failure: ProbeFai
     #expect(failed.stableSnapshot?.gpus.map(\.occupancy) == [.free])
 }
 
+@Test func failedPollPreservesCandidateForTheNextMatchingObservation() async {
+    let tracker = StateTracker(confirmationCount: 2, offlineFailureCount: 3)
+    _ = await tracker.recordSuccess(.snapshot(.free))
+    _ = await tracker.recordSuccess(.snapshot(.busy))
+    _ = await tracker.recordFailure(server: .fixture, failure: .connectivity)
+
+    let confirmed = await tracker.recordSuccess(.snapshot(.busy))
+
+    #expect(confirmed.events == [
+        .gpuChanged(
+            server: .fixture,
+            gpu: .gpu(index: 0, .busy),
+            from: .free,
+            to: .busy
+        ),
+    ])
+    #expect(confirmed.stableSnapshot?.gpus.map(\.occupancy) == [.busy])
+}
+
+@Test func candidateOfflineAndRecoveryStateRemainIsolatedAcrossServers() async {
+    let tracker = StateTracker(confirmationCount: 2, offlineFailureCount: 2)
+    _ = await tracker.recordSuccess(.snapshot(.free, server: .server10122))
+    _ = await tracker.recordSuccess(.snapshot(.free, server: .server10165))
+
+    let candidate10122 = await tracker.recordSuccess(.snapshot(.busy, server: .server10122))
+    let firstFailure10165 = await tracker.recordFailure(
+        server: .server10165,
+        failure: .connectivity
+    )
+    let offline10165 = await tracker.recordFailure(
+        server: .server10165,
+        failure: .connectivity
+    )
+    let confirmed10122 = await tracker.recordSuccess(.snapshot(.busy, server: .server10122))
+    let recovery10165 = await tracker.recordSuccess(.snapshot(.free, server: .server10165))
+
+    #expect(candidate10122.events.isEmpty)
+    #expect(firstFailure10165.health == .degraded(
+        message: ProbeFailure.connectivity.localizedDescription,
+        consecutiveFailures: 1
+    ))
+    #expect(offline10165.events == [
+        .serverOffline(
+            server: .server10165,
+            message: ProbeFailure.connectivity.localizedDescription
+        ),
+    ])
+    #expect(confirmed10122.events == [
+        .gpuChanged(
+            server: .server10122,
+            gpu: .gpu(index: 0, .busy),
+            from: .free,
+            to: .busy
+        ),
+    ])
+    #expect(recovery10165.events == [.serverRecovered(server: .server10165)])
+}
+
 @Test func rebaselineDefensivelyUniquesDuplicateGPUUUIDs() async {
     let tracker = StateTracker(confirmationCount: 2, offlineFailureCount: 3)
     let duplicate = GPUSnapshot(

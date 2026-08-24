@@ -199,9 +199,8 @@ public actor MacOSNotificationSink: NotificationSink, NotificationAuthorizationP
             }
         }
 
-        return NotificationDeliveryResult(
+        return try! NotificationDeliveryResult(
             attemptedCount: messages.count,
-            deliveredCount: messages.count - failures.count,
             failures: failures
         )
     }

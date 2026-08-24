@@ -133,3 +133,47 @@ func parseRejectsEmptyProcessIdentityFields(_ processRow: String) {
         try NVIDIAOutputParser().parse(output, server: .fixture, capturedAt: .distantPast)
     }
 }
+
+@Test func parseTreatsMarkerSubstringInGPUNameAsOrdinaryData() throws {
+    let output = "0, GPU-a, NVIDIA __GPU_MONITOR_PROCESSES__ Edition, 0, 0, 100, 30\n  __GPU_MONITOR_PROCESSES__  \n"
+
+    let result = try NVIDIAOutputParser().parse(
+        output,
+        server: .fixture,
+        capturedAt: .distantPast
+    )
+
+    #expect(result.gpus[0].name == "NVIDIA __GPU_MONITOR_PROCESSES__ Edition")
+}
+
+@Test func parseTreatsMarkerSubstringInProcessNameAsOrdinaryData() throws {
+    let output = """
+    0, GPU-a, GPU A, 0, 0, 100, 30
+    __GPU_MONITOR_PROCESSES__
+    GPU-a, 123, worker-__GPU_MONITOR_PROCESSES__-main, 10
+    """
+
+    let result = try NVIDIAOutputParser().parse(
+        output,
+        server: .fixture,
+        capturedAt: .distantPast
+    )
+
+    #expect(result.gpus[0].processes[0].name == "worker-__GPU_MONITOR_PROCESSES__-main")
+}
+
+@Test func parseRequiresExactlyOneStandaloneMarkerLine() {
+    let missing = "0, GPU-a, GPU A, 0, 0, 100, 30\n"
+    let duplicate = """
+    0, GPU-a, GPU A, 0, 0, 100, 30
+    __GPU_MONITOR_PROCESSES__
+    __GPU_MONITOR_PROCESSES__
+    """
+
+    #expect(throws: NVIDIAParseError.missingMarker) {
+        try NVIDIAOutputParser().parse(missing, server: .fixture, capturedAt: .distantPast)
+    }
+    #expect(throws: NVIDIAParseError.missingMarker) {
+        try NVIDIAOutputParser().parse(duplicate, server: .fixture, capturedAt: .distantPast)
+    }
+}

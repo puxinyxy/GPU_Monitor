@@ -12,6 +12,12 @@ public struct NotificationDeliveryFailure: Equatable, Sendable {
     }
 }
 
+public enum NotificationDeliveryResultValidationError: Error, Equatable, Sendable {
+    case negativeAttemptedCount
+    case failureIndexOutOfRange(Int)
+    case duplicateFailureIndex(Int)
+}
+
 public struct NotificationDeliveryResult: Equatable, Sendable {
     public let attemptedCount: Int
     public let deliveredCount: Int
@@ -19,11 +25,27 @@ public struct NotificationDeliveryResult: Equatable, Sendable {
 
     public init(
         attemptedCount: Int,
-        deliveredCount: Int,
         failures: [NotificationDeliveryFailure]
-    ) {
+    ) throws {
+        guard attemptedCount >= 0 else {
+            throw NotificationDeliveryResultValidationError.negativeAttemptedCount
+        }
+        var seenFailureIndices: Set<Int> = []
+        for failure in failures {
+            guard (0..<attemptedCount).contains(failure.messageIndex) else {
+                throw NotificationDeliveryResultValidationError.failureIndexOutOfRange(
+                    failure.messageIndex
+                )
+            }
+            guard seenFailureIndices.insert(failure.messageIndex).inserted else {
+                throw NotificationDeliveryResultValidationError.duplicateFailureIndex(
+                    failure.messageIndex
+                )
+            }
+        }
+
         self.attemptedCount = attemptedCount
-        self.deliveredCount = deliveredCount
+        self.deliveredCount = attemptedCount - failures.count
         self.failures = failures
     }
 

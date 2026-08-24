@@ -15,14 +15,21 @@ public struct NVIDIAOutputParser: Sendable {
     public init() {}
 
     public func parse(_ output: String, server: ServerConfig, capturedAt: Date) throws -> ServerSnapshot {
-        let sections = output.components(separatedBy: Self.marker)
-        guard sections.count == 2 else { throw NVIDIAParseError.missingMarker }
+        let lines = output.components(separatedBy: .newlines)
+        let markerLines = lines.indices.filter { index in
+            lines[index].trimmingCharacters(in: .whitespacesAndNewlines) == Self.marker
+        }
+        guard markerLines.count == 1, let markerLine = markerLines.first else {
+            throw NVIDIAParseError.missingMarker
+        }
+        let gpuSection = lines[..<markerLine].joined(separator: "\n")
+        let processSection = lines[lines.index(after: markerLine)...].joined(separator: "\n")
 
-        let processes = try parseProcesses(sections[1])
+        let processes = try parseProcesses(processSection)
         var seenUUIDs: Set<String> = []
         var seenIndices: Set<Int> = []
         var gpus: [GPUSnapshot] = []
-        for line in sections[0].split(whereSeparator: \.isNewline) {
+        for line in gpuSection.split(whereSeparator: \.isNewline) {
             guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             let gpu = try parseGPU(String(line), processesByUUID: processes)
             guard seenUUIDs.insert(gpu.uuid).inserted,
