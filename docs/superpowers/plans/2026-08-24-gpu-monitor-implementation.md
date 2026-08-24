@@ -146,7 +146,7 @@ struct GPUMonitorApp: App {
     let servers = try store.loadOrCreate()
 
     #expect(servers.map(\.port) == [10122, 10165])
-    #expect(Set(servers.map(\.host)) == ["122.207.108.8"])
+    #expect(servers.map(\.host) == ["122.207.108.8", "122.207.108.7"])
     #expect(Set(servers.map(\.username)) == ["yanxiaoyang"])
     let data = try Data(contentsOf: root.appending(path: "servers.json"))
     #expect(!String(decoding: data, as: UTF8.self).localizedCaseInsensitiveContains("password"))
@@ -214,7 +214,7 @@ public enum MonitorEvent: Equatable, Sendable {
 }
 ```
 
-`AppPaths.live()` resolves `~/Library/Application Support/GPUMonitor/servers.json`, `known_hosts`, and `~/.ssh/gpu_monitor_ed25519`. `ConfigurationStore.loadOrCreate()` creates parent directories, writes indented/sorted JSON atomically on first run, and returns the two server records in the approved order.
+`AppPaths.live()` resolves `~/Library/Application Support/GPUMonitor/servers.json`, `known_hosts`, and `~/.ssh/gpu_monitor_ed25519`. `ConfigurationStore.loadOrCreate()` creates parent directories, writes indented/sorted JSON atomically on first run, and returns the two server records in the approved order. For an existing file, it atomically migrates only the exact legacy `server-10165` endpoint `122.207.108.8:10165` to `122.207.108.7:10165`, preserving all other records and fields.
 
 `TestSupport.swift` defines the exact reusable fixtures used by later tasks: `ServerConfig.fixture`, `.server10122`, `.server10165`, `ServerSnapshot.snapshot(_:)`, `GPUSnapshot.gpu(index:_:)`, `GPUSnapshot.busyGPU(index:pid:name:)`, `validNVIDIAOutput`, `RecordingRunner`, `ControlledProbe`, and `TestError.unreachable`. Keeping these definitions in one file prevents later tests from inventing incompatible fixture types.
 
@@ -806,7 +806,7 @@ codesign --verify --deep --strict --verbose=2 "$app_dir"
 
 - [ ] **Step 3: Add an interactive password-free-source SSH provisioning script**
 
-The script creates `~/.ssh/gpu_monitor_ed25519` if absent, creates the dedicated known-hosts file, then loops over ports `10122` and `10165`. Each initial `ssh` command uses `StrictHostKeyChecking=accept-new`, displays the learned fingerprint, and prompts interactively for the server password.
+The script creates `~/.ssh/gpu_monitor_ed25519` if absent, creates the dedicated known-hosts file, then loops over the explicit endpoint pairs `122.207.108.8:10122` and `122.207.108.7:10165`. Each initial `ssh` command uses `StrictHostKeyChecking=accept-new`, displays the learned fingerprint, and prompts interactively for the server password.
 
 Every initial-password, batch sample, forced-command, and forwarding-verification SSH invocation must pass the dedicated known-hosts path as one `-o` argument whose value is quoted at the OpenSSH configuration syntax level (`UserKnownHostsFile="..."`). The offline fake-SSH harness records argv boundaries and rejects missing inner quotes, including the `Application Support` whitespace path.
 

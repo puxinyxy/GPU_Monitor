@@ -54,7 +54,7 @@ GPU 的空闲/占用由是否存在计算进程判断。利用率、显存和温
 ~/Library/Application Support/GPUMonitor/servers.json
 ```
 
-退出 GPU Monitor 后可编辑这个 JSON 文件中的 `id`、`label`、`host`、`port`、`username` 和 `identityFile`，再重新打开应用。配置不得加入密码。SSH 主机密钥固定在：
+退出 GPU Monitor 后可编辑这个 JSON 文件中的 `id`、`label`、`host`、`port`、`username` 和 `identityFile`，再重新打开应用。配置不得加入密码。升级时，应用只会把精确匹配 `server-10165`、`122.207.108.8:10165` 的旧端点原子迁移到 `122.207.108.7:10165`；第一台和其他自定义记录保持不变。SSH 主机密钥固定在：
 
 ```text
 ~/Library/Application Support/GPUMonitor/known_hosts
@@ -94,7 +94,7 @@ awk '{print $2}' "$HOME/.ssh/gpu_monitor_ed25519.pub"
 
 ```bash
 ssh -p 10122 yanxiaoyang@122.207.108.8
-ssh -p 10165 yanxiaoyang@122.207.108.8
+ssh -p 10165 yanxiaoyang@122.207.108.7
 ```
 
 在每台服务器上运行 `cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.gpu-monitor-backup`，然后用编辑器只删除公钥 blob 与上一步输出完全相同的那一行。此远端操作是独立、显式步骤；任何卸载脚本都不会代为执行。

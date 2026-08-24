@@ -106,7 +106,7 @@ new_case() {
     local host_blob="${host_remainder%% *}"
     {
         print -r -- "[122.207.108.8]:10122 $host_type $host_blob"
-        print -r -- "[122.207.108.8]:10165 $host_type $host_blob"
+        print -r -- "[122.207.108.7]:10165 $host_type $host_blob"
     } > "$case_home/Library/Application Support/GPUMonitor/known_hosts"
 }
 
@@ -156,7 +156,11 @@ logged_ssh_calls_use_quoted_known_hosts() {
             }
             calls++
             expected_port = calls <= 5 ? "10122" : "10165"
-            if (known_hosts_count != 1 || port != expected_port) {
+            destination_count = calls <= 5 \
+                ? first_destination_count \
+                : second_destination_count
+            if (known_hosts_count != 1 || port != expected_port ||
+                destination_count != 1) {
                 invalid = 1
             }
             if (batch_mode == "no") {
@@ -175,6 +179,8 @@ logged_ssh_calls_use_quoted_known_hosts() {
             known_hosts_count = 0
             batch_mode = ""
             port = ""
+            first_destination_count = 0
+            second_destination_count = 0
             expecting_port = 0
             next
         }
@@ -191,6 +197,8 @@ logged_ssh_calls_use_quoted_known_hosts() {
                 expecting_port = 1
             }
             if (argument == expected) known_hosts_count++
+            if (argument == "yanxiaoyang@122.207.108.8") first_destination_count++
+            if (argument == "yanxiaoyang@122.207.108.7") second_destination_count++
             if (argument == "BatchMode=no") batch_mode = "no"
             if (argument == "BatchMode=yes") batch_mode = "yes"
             next

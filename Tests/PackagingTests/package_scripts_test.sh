@@ -179,6 +179,8 @@ check "provisioner passes the known-hosts option as one argument" file_contains 
 check "provisioner never passes an unquoted config-level known-hosts value" file_not_contains "$provision_script" '-o UserKnownHostsFile="$known_hosts"'
 check "provisioner covers port 10122" file_contains "$provision_script" '10122'
 check "provisioner covers port 10165" file_contains "$provision_script" '10165'
+check "provisioner pairs the first approved host and port" file_line_contains_both "$provision_script" '122.207.108.8' '10122'
+check "provisioner pairs the second approved host and port" file_line_contains_both "$provision_script" '122.207.108.7' '10165'
 check "provisioner rejects the stale first-server port" file_not_contains "$provision_script" "$stale_first_port"
 check "first connection accepts only new host keys" file_contains "$provision_script" 'StrictHostKeyChecking=accept-new'
 check "verification is noninteractive" file_contains "$provision_script" 'BatchMode=yes'
@@ -203,6 +205,8 @@ check "provisioner reports a learned fingerprint" file_contains "$provision_scri
 
 check "README has exact repository command" file_contains "$readme" 'cd /Users/yxy/Documents/workspace/gpu-monitor'
 check "README documents the exact approved ports" file_contains "$readme" '`10122` 和 `10165`'
+check "README documents the first approved endpoint" file_contains "$readme" 'ssh -p 10122 yanxiaoyang@122.207.108.8'
+check "README documents the second approved endpoint" file_contains "$readme" 'ssh -p 10165 yanxiaoyang@122.207.108.7'
 check "README rejects the stale first-server port" file_not_contains "$readme" "$stale_first_port"
 check "README has exact provision command" file_contains "$readme" './scripts/provision_ssh.sh'
 check "README has exact test command" file_contains "$readme" 'swift run GPUMonitorCoreTestsRunner'

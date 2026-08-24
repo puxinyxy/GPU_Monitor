@@ -7,9 +7,11 @@ set -euo pipefail
     exit 64
 }
 
-host="122.207.108.8"
 username="yanxiaoyang"
-ports=(10122 10165)
+endpoint_specs=(
+    "122.207.108.8 10122"
+    "122.207.108.7 10165"
+)
 ssh_dir="$HOME/.ssh"
 identity_file="$ssh_dir/gpu_monitor_ed25519"
 public_key_file="$identity_file.pub"
@@ -293,7 +295,9 @@ fail_after_verification() {
     fail "$message"
 }
 
-for port in $ports; do
+for endpoint_spec in "${endpoint_specs[@]}"; do
+    host="${endpoint_spec%% *}"
+    port="${endpoint_spec##* }"
     destination="$username@$host"
     host_token="[$host]:$port"
     print
