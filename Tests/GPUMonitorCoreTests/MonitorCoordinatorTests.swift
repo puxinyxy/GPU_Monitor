@@ -40,30 +40,40 @@ private actor ConcurrentBarrierProbe: GPUProbing {
 }
 
 private actor HandoffProbe: GPUProbing {
-    private var firstSampleStartedWaiter: CheckedContinuation<Void, Never>?
-    private var firstSampleRelease: CheckedContinuation<Void, Never>?
-    private var firstSampleHasStarted = false
+    private var sampleStartedWaiters: [Int: CheckedContinuation<Bool, Never>] = [:]
+    private var sampleReleases: [Int: CheckedContinuation<Void, Never>] = [:]
     private(set) var sampleCount = 0
 
     func sample(server: ServerConfig) async -> ServerSnapshot {
         sampleCount += 1
-        if sampleCount == 1 {
-            firstSampleHasStarted = true
-            firstSampleStartedWaiter?.resume()
-            firstSampleStartedWaiter = nil
-            await withCheckedContinuation { firstSampleRelease = $0 }
+        let generation = sampleCount
+        sampleStartedWaiters.removeValue(forKey: generation)?.resume(returning: true)
+        if generation <= 2 {
+            await withCheckedContinuation { sampleReleases[generation] = $0 }
         }
         return .snapshot(.free, server: server)
     }
 
-    func waitUntilFirstSampleStarts() async {
-        guard !firstSampleHasStarted else { return }
-        await withCheckedContinuation { firstSampleStartedWaiter = $0 }
+    func waitUntilSampleStarts(_ generation: Int) async -> Bool {
+        guard sampleCount < generation else { return true }
+        return await withCheckedContinuation { sampleStartedWaiters[generation] = $0 }
     }
 
-    func releaseFirstSample() {
-        firstSampleRelease?.resume()
-        firstSampleRelease = nil
+    func releaseSample(_ generation: Int) {
+        sampleReleases.removeValue(forKey: generation)?.resume()
+    }
+
+    func releaseAllAndExpireWaiters() {
+        let releases = sampleReleases.values
+        let waiters = sampleStartedWaiters.values
+        sampleReleases.removeAll()
+        sampleStartedWaiters.removeAll()
+        for release in releases {
+            release.resume()
+        }
+        for waiter in waiters {
+            waiter.resume(returning: false)
+        }
     }
 }
 
@@ -80,6 +90,70 @@ private actor OneShotSignal {
     func wait() async {
         guard !signalled else { return }
         await withCheckedContinuation { waiter = $0 }
+    }
+
+    var hasSignalled: Bool { signalled }
+}
+
+private actor BooleanObservation {
+    private var value: Bool?
+
+    func record(_ newValue: Bool) {
+        precondition(value == nil)
+        value = newValue
+    }
+
+    var recordedValue: Bool? { value }
+}
+
+private actor PollCallerHarness {
+    private var callStarted = false
+    private var callCompleted = false
+    private var callStartedWaiter: CheckedContinuation<Void, Never>?
+
+    func call(_ coordinator: MonitorCoordinator) async -> MonitorCycle {
+        callStarted = true
+        callStartedWaiter?.resume()
+        callStartedWaiter = nil
+        let cycle = await coordinator.poll()
+        callCompleted = true
+        return cycle
+    }
+
+    func waitUntilCallIsSuspended() async -> Bool {
+        if !callStarted {
+            await withCheckedContinuation { callStartedWaiter = $0 }
+        }
+        return !callCompleted
+    }
+}
+
+private actor WaiterCallerHarness {
+    private var firstCallStarted = false
+    private var firstCallCompleted = false
+    private var firstCallStartedWaiter: CheckedContinuation<Void, Never>?
+
+    func callTwice(
+        _ coordinator: MonitorCoordinator,
+        creatorReturned: OneShotSignal,
+        creatorStateAtSecondPoll: BooleanObservation,
+        secondPollStarted: OneShotSignal
+    ) async -> MonitorCycle {
+        firstCallStarted = true
+        firstCallStartedWaiter?.resume()
+        firstCallStartedWaiter = nil
+        _ = await coordinator.poll()
+        firstCallCompleted = true
+        await creatorStateAtSecondPoll.record(await creatorReturned.hasSignalled)
+        await secondPollStarted.signal()
+        return await coordinator.poll()
+    }
+
+    func waitUntilFirstCallIsSuspended() async -> Bool {
+        if !firstCallStarted {
+            await withCheckedContinuation { firstCallStartedWaiter = $0 }
+        }
+        return !firstCallCompleted
     }
 }
 
@@ -154,26 +228,59 @@ private actor FlakyProbe: GPUProbing {
 @Test func waiterReturningFirstClearsTheCompletedPollBeforeStartingAnother() async {
     let probe = HandoffProbe()
     let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
-    let waiterStarted = OneShotSignal()
-    let creator = Task.detached(priority: .background) {
-        await coordinator.poll()
+    let creatorReturned = OneShotSignal()
+    let waiterStartedSecondPoll = OneShotSignal()
+    let creatorStateAtSecondPoll = BooleanObservation()
+    let creatorCaller = PollCallerHarness()
+    let waiterCaller = WaiterCallerHarness()
+    let joinerCaller = PollCallerHarness()
+    let deadlockGuard = Task {
+        try? await ContinuousClock().sleep(for: .milliseconds(500))
+        await probe.releaseAllAndExpireWaiters()
     }
-    await probe.waitUntilFirstSampleStarts()
+    let creator = Task {
+        let cycle = await creatorCaller.call(coordinator)
+        await creatorReturned.signal()
+        return cycle
+    }
+    #expect(await creatorCaller.waitUntilCallIsSuspended())
+    #expect(await probe.waitUntilSampleStarts(1))
 
-    let waiter = Task.detached(priority: .high) {
-        await waiterStarted.signal()
-        _ = await coordinator.poll()
-        return await coordinator.poll()
+    let waiter = Task {
+        await waiterCaller.callTwice(
+            coordinator,
+            creatorReturned: creatorReturned,
+            creatorStateAtSecondPoll: creatorStateAtSecondPoll,
+            secondPollStarted: waiterStartedSecondPoll
+        )
     }
-    await waiterStarted.wait()
-    for _ in 0..<10 {
-        await Task.yield()
+    #expect(await waiterCaller.waitUntilFirstCallIsSuspended())
+    await probe.releaseSample(1)
+    await waiterStartedSecondPoll.wait()
+    #expect(await creatorStateAtSecondPoll.recordedValue == false)
+    guard await probe.waitUntilSampleStarts(2) else {
+        Issue.record("The waiter did not start a second poll")
+        _ = await waiter.value
+        _ = await creator.value
+        deadlockGuard.cancel()
+        await deadlockGuard.value
+        return
     }
-    await probe.releaseFirstSample()
+    await creatorReturned.wait()
 
+    let joiner = Task {
+        await joinerCaller.call(coordinator)
+    }
+    #expect(await joinerCaller.waitUntilCallIsSuspended())
+    #expect(await probe.sampleCount == 2)
+    await probe.releaseSample(2)
+
+    _ = await joiner.value
     _ = await waiter.value
     _ = await creator.value
     #expect(await probe.sampleCount == 2)
+    deadlockGuard.cancel()
+    await deadlockGuard.value
 }
 
 @Test func eventsFollowConfiguredServerOrderRatherThanCompletionOrder() async {
