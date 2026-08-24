@@ -16,9 +16,19 @@ let package = Package(
     targets: [
         .target(name: "GPUMonitorCore"),
         .target(name: "GPUMonitorNotifications", dependencies: ["GPUMonitorCore"]),
+        .target(
+            name: "GPUMonitorUI",
+            dependencies: ["GPUMonitorCore", "GPUMonitorNotifications"],
+            path: "Sources/GPUMonitorApp",
+            exclude: ["GPUMonitorApp.swift", "MacOSNotificationSink.swift"],
+            sources: ["AppModel.swift", "MenuContentView.swift"]
+        ),
         .executableTarget(
             name: "GPUMonitorApp",
-            dependencies: ["GPUMonitorCore", "GPUMonitorNotifications"]
+            dependencies: ["GPUMonitorUI"],
+            path: "Sources/GPUMonitorApp",
+            exclude: ["AppModel.swift", "MenuContentView.swift", "MacOSNotificationSink.swift"],
+            sources: ["GPUMonitorApp.swift"]
         ),
         .executableTarget(
             name: "GPUMonitorCoreTestsRunner",
@@ -33,7 +43,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "GPUMonitorAppTestsRunner",
-            dependencies: ["GPUMonitorNotifications", "GPUMonitorCore"],
+            dependencies: ["GPUMonitorUI", "GPUMonitorNotifications", "GPUMonitorCore"],
             path: "Tests/GPUMonitorAppTests",
             swiftSettings: [.unsafeFlags(["-F", developerFrameworks])],
             linkerSettings: [.unsafeFlags([
