@@ -17,7 +17,7 @@ struct AppleScriptNotificationClient: CompatibilityNotificationClient, Sendable 
             executable: "/usr/bin/osascript",
             arguments: [
                 "-e", "on run argv",
-                "-e", #"display notification (item 2 of argv) with title "GPU Monitor" subtitle (item 1 of argv) sound name "default""#,
+                "-e", "display notification (item 2 of argv) with title \"GPU Monitor\" subtitle (item 1 of argv) sound name \"default\"",
                 "-e", "end run",
                 "--", title, body,
             ],

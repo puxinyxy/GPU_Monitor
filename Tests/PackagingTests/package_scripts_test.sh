@@ -27,6 +27,29 @@ file_not_contains() {
     [[ -f "$file" ]] && ! /usr/bin/grep -Fiq -- "$needle" "$file"
 }
 
+swift_source_contains_semantic_fragment() {
+    local file=$1
+    local needle=$2
+    [[ -f "$file" ]] && /usr/bin/awk -v needle="$needle" '
+        {
+            normalized = $0
+            gsub(/\\"/, "\"", normalized)
+            if (index(normalized, needle)) { found = 1; exit }
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$file"
+}
+
+file_line_contains_both() {
+    local file=$1
+    local first=$2
+    local second=$3
+    [[ -f "$file" ]] && /usr/bin/awk -v first="$first" -v second="$second" '
+        index($0, first) && index($0, second) { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+    ' "$file"
+}
+
 file_text_precedes() {
     local file=$1
     local first=$2
@@ -105,7 +128,9 @@ check "foreground callback delegates through the tested presentation helper" fil
 check "compatibility notification client exists" test -f "$compatibility_client"
 check "compatibility notifications use the absolute system osascript" file_contains "$compatibility_client" 'executable: "/usr/bin/osascript"'
 check "compatibility notifications use argv terminator" file_contains "$compatibility_client" '"--", title, body'
-check "compatibility notification text is read from argv" file_contains "$compatibility_client" 'display notification (item 2 of argv) with title "GPU Monitor" subtitle (item 1 of argv)'
+check "compatibility notification body is read from argv" swift_source_contains_semantic_fragment "$compatibility_client" 'display notification (item 2 of argv)'
+check "compatibility notification title is fixed" swift_source_contains_semantic_fragment "$compatibility_client" 'with title "GPU Monitor"'
+check "compatibility notification subtitle is read from argv" swift_source_contains_semantic_fragment "$compatibility_client" 'subtitle (item 1 of argv)'
 check "compatibility notifications never invoke a shell" file_not_contains "$compatibility_client" '/bin/sh'
 check "compatibility notifications never invoke zsh" file_not_contains "$compatibility_client" 'zsh -c'
 check "compatibility notifications never use AppleScript shell execution" file_not_contains "$compatibility_client" 'do shell script'
@@ -159,7 +184,11 @@ check "README has strict concurrency verification" file_contains "$readme" '-str
 check "README has exact package command" file_contains "$readme" './scripts/package_app.sh'
 check "README has exact install command" file_contains "$readme" './scripts/install_app.sh'
 check "README documents no login-item setup" file_contains "$readme" '不配置开机自启'
-check "README documents Script Editor compatibility branding" file_contains "$readme" '脚本编辑器'
+check "README ties compatibility mode to Script Editor branding" file_line_contains_both "$readme" '兼容模式' '脚本编辑器'
+check "README makes certificate signing only a possible native-notification enabler" file_contains "$readme" '有效 Apple 证书签名可能使系统允许原生通知，但不是恢复的保证'
+check "README restores native delivery only for observed available authorization" file_contains "$readme" '只有在随后观察到授权状态为 `authorized`、`provisional` 或 `ephemeral` 时才恢复原生通道'
+check "README keeps explicit denial denied" file_contains "$readme" '`denied` 仍保持未授权且绝不回退'
+check "README does not promise certificate signing automatically restores native delivery" file_not_contains "$readme" '用有效 Apple 证书签名后，应用会自动恢复原生通道'
 check "README documents graceful installer shutdown" file_contains "$readme" 'Apple Event 请求已安装实例正常退出'
 check "README documents privacy" file_contains "$readme" '隐私'
 check "README documents server editing" file_contains "$readme" 'servers.json'
@@ -167,6 +196,9 @@ check "README documents config-level known-hosts quoting" file_contains "$readme
 check "README keeps remote-key removal explicit" file_contains "$readme" 'authorized_keys'
 check "README records the public blob before deleting its file" file_text_precedes "$readme" 'awk '\''{print $2}'\'' "$HOME/.ssh/gpu_monitor_ed25519.pub"' 'rm -f "$HOME/.ssh/gpu_monitor_ed25519"'
 check "README does not claim unsupported polling fields" file_not_contains "$readme" '轮询参数'
+check "design installation acceptance is conditional on runtime authorization" file_contains "$project_dir/docs/superpowers/specs/2026-08-24-gpu-monitor-design.md" '原生授权成功时预期由 GPU Monitor 原生投递；只有精确 `notificationsNotAllowed` 且授权状态不是 `denied` 时才预期进入“通知：兼容模式”'
+check "design records the factual 2026-08-24 native acceptance" file_contains "$project_dir/docs/superpowers/specs/2026-08-24-gpu-monitor-design.md" '2026-08-24 实机验收：原生 `com.yxy.gpumonitor` 通知在 10165 第三次连接拒绝附近展示一次，后续观察未重复；本次未在实机触发兼容模式。'
+check "design no longer claims the current ad-hoc install is in compatibility mode" file_not_contains "$project_dir/docs/superpowers/specs/2026-08-24-gpu-monitor-design.md" '当前 ad-hoc 安装显示“通知：兼容模式”'
 
 if (( failures > 0 )); then
     print -u2 "$failures packaging checks failed"
