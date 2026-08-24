@@ -93,33 +93,70 @@ actor LiveUserNotificationCenterClient: UserNotificationCenterClient {
     }
 }
 
+private enum NotificationDeliveryMode: Equatable, Sendable {
+    case native
+    case compatibility
+}
+
 public actor MacOSNotificationSink: NotificationSink, NotificationAuthorizationProviding {
     private let center: any UserNotificationCenterClient
+    private let compatibility: any CompatibilityNotificationClient
     private let formatter: NotificationFormatter
+    private var deliveryMode: NotificationDeliveryMode = .native
 
     public init(formatter: NotificationFormatter = NotificationFormatter()) {
         self.center = LiveUserNotificationCenterClient()
+        self.compatibility = AppleScriptNotificationClient()
         self.formatter = formatter
     }
 
     init(
         center: any UserNotificationCenterClient,
+        compatibility: any CompatibilityNotificationClient = AppleScriptNotificationClient(),
         formatter: NotificationFormatter = NotificationFormatter()
     ) {
         self.center = center
+        self.compatibility = compatibility
         self.formatter = formatter
     }
 
     public func requestAuthorization() async -> NotificationAuthorizationState {
         do {
-            return try await center.requestAuthorization()
+            let state = try await center.requestAuthorization()
+            return applyNativeState(state)
         } catch {
-            return .error
+            guard Self.isNotificationsNotAllowed(error) else {
+                deliveryMode = .native
+                return .error
+            }
+            let currentState = await center.authorizationState()
+            guard currentState != .denied else {
+                deliveryMode = .native
+                return .denied
+            }
+            if currentState == .authorized ||
+                currentState == .provisional ||
+                currentState == .ephemeral {
+                deliveryMode = .native
+                return currentState
+            }
+            deliveryMode = .compatibility
+            return .compatibility
         }
     }
 
     public func authorizationState() async -> NotificationAuthorizationState {
-        await center.authorizationState()
+        let state = await center.authorizationState()
+        switch state {
+        case .authorized, .provisional, .ephemeral, .denied:
+            deliveryMode = .native
+            return state
+        case .notDetermined, .error:
+            return deliveryMode == .compatibility ? .compatibility : state
+        case .compatibility:
+            deliveryMode = .compatibility
+            return .compatibility
+        }
     }
 
     public func send(events: [MonitorEvent]) async -> NotificationDeliveryResult {
@@ -127,14 +164,36 @@ public actor MacOSNotificationSink: NotificationSink, NotificationAuthorizationP
         var failures: [NotificationDeliveryFailure] = []
 
         for (index, message) in messages.enumerated() {
-            let request = MacOSNotificationRequest(
-                identifier: UUID().uuidString,
-                title: message.title,
-                body: message.body,
-                playsDefaultSound: true
-            )
+            if Task.isCancelled {
+                failures.append(contentsOf: (index..<messages.count).map {
+                    NotificationDeliveryFailure(
+                        messageIndex: $0,
+                        reason: .schedulingFailed
+                    )
+                })
+                break
+            }
+
             do {
-                try await center.add(request)
+                switch deliveryMode {
+                case .native:
+                    try await center.add(MacOSNotificationRequest(
+                        identifier: UUID().uuidString,
+                        title: message.title,
+                        body: message.body,
+                        playsDefaultSound: true
+                    ))
+                case .compatibility:
+                    try await compatibility.add(title: message.title, body: message.body)
+                }
+            } catch is CancellationError {
+                failures.append(contentsOf: (index..<messages.count).map {
+                    NotificationDeliveryFailure(
+                        messageIndex: $0,
+                        reason: .schedulingFailed
+                    )
+                })
+                break
             } catch {
                 failures.append(NotificationDeliveryFailure(
                     messageIndex: index,
@@ -148,5 +207,18 @@ public actor MacOSNotificationSink: NotificationSink, NotificationAuthorizationP
             deliveredCount: messages.count - failures.count,
             failures: failures
         )
+    }
+
+    private func applyNativeState(
+        _ state: NotificationAuthorizationState
+    ) -> NotificationAuthorizationState {
+        deliveryMode = state == .compatibility ? .compatibility : .native
+        return state
+    }
+
+    private static func isNotificationsNotAllowed(_ error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == UNErrorDomain &&
+            error.code == UNError.Code.notificationsNotAllowed.rawValue
     }
 }
