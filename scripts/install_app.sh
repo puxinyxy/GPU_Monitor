@@ -4,6 +4,17 @@ set -euo pipefail
 project_dir=${0:A:h:h}
 source_app="$project_dir/dist/GPU Monitor.app"
 install_dir="/Applications/GPU Monitor.app"
+installed_executable="$install_dir/Contents/MacOS/GPUMonitor"
+
+installed_pids() {
+    local current_uid process_pid process_uid process_executable
+    current_uid=$(/usr/bin/id -u)
+    /bin/ps -axo pid=,uid=,comm= | while read -r process_pid process_uid process_executable; do
+        if [[ "$process_uid" == "$current_uid" && "$process_executable" == "$installed_executable" ]]; then
+            print -r -- "$process_pid"
+        fi
+    done
+}
 
 [[ "$install_dir" == "/Applications/GPU Monitor.app" ]] || exit 2
 "$project_dir/scripts/package_app.sh"
@@ -12,14 +23,17 @@ install_dir="/Applications/GPU Monitor.app"
     exit 1
 }
 
-if /usr/bin/pgrep -x GPUMonitor >/dev/null 2>&1; then
-    /usr/bin/pkill -x GPUMonitor
+running_pids=(${(f)"$(installed_pids)"})
+if (( ${#running_pids} > 0 )); then
+    /bin/kill -TERM -- "${running_pids[@]}"
     for _ in {1..20}; do
-        /usr/bin/pgrep -x GPUMonitor >/dev/null 2>&1 || break
+        running_pids=(${(f)"$(installed_pids)"})
+        (( ${#running_pids} == 0 )) && break
         /bin/sleep 0.1
     done
-    if /usr/bin/pgrep -x GPUMonitor >/dev/null 2>&1; then
-        print -u2 "GPU Monitor is still running; installation stopped."
+    running_pids=(${(f)"$(installed_pids)"})
+    if (( ${#running_pids} > 0 )); then
+        print -u2 "The installed GPU Monitor copy is still running; installation stopped."
         exit 1
     fi
 fi

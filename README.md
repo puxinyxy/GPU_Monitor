@@ -14,7 +14,7 @@ swift run GPUMonitorCoreTestsRunner
 ./scripts/install_app.sh
 ```
 
-`package_app.sh` 生成并验证 `dist/GPU Monitor.app` 的 ad-hoc 签名。`install_app.sh` 重新打包，停止名为 `GPUMonitor` 的运行实例，只替换 `/Applications/GPU Monitor.app`，验证签名后启动应用。安装过程不会修改其他应用。
+`package_app.sh` 生成并验证 `dist/GPU Monitor.app` 的 ad-hoc 签名。`install_app.sh` 重新打包，只停止当前用户从 `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor` 精确路径运行的实例，只替换 `/Applications/GPU Monitor.app`，验证签名后启动应用。安装过程不会修改其他应用，也不会停止调试版本或其他同名进程。
 
 ## 状态含义
 
@@ -34,7 +34,7 @@ GPU 的空闲/占用由是否存在计算进程判断。利用率、显存和温
 ~/Library/Application Support/GPUMonitor/servers.json
 ```
 
-退出 GPU Monitor 后可编辑这个 JSON 文件中的 `id`、`label`、`host`、`port`、`username`、`identityFile` 和轮询参数，再重新打开应用。配置不得加入密码。SSH 主机密钥固定在：
+退出 GPU Monitor 后可编辑这个 JSON 文件中的 `id`、`label`、`host`、`port`、`username` 和 `identityFile`，再重新打开应用。配置不得加入密码。SSH 主机密钥固定在：
 
 ```text
 ~/Library/Application Support/GPUMonitor/known_hosts
@@ -56,14 +56,7 @@ GPU 的空闲/占用由是否存在计算进程判断。利用率、显存和温
 rm -rf "/Applications/GPU Monitor.app"
 ```
 
-只有在确认不再使用专用 SSH 身份与本地配置后，才选择执行：
-
-```bash
-rm -f "$HOME/.ssh/gpu_monitor_ed25519" "$HOME/.ssh/gpu_monitor_ed25519.pub"
-rm -rf "$HOME/Library/Application Support/GPUMonitor"
-```
-
-本地卸载不会自动修改任何服务器。若要撤销远端访问，先显示本地公钥 blob：
+本地卸载不会自动修改任何服务器。在删除本地 `.pub` 文件之前，若要撤销远端访问，必须先显示并临时记录公钥 blob：
 
 ```bash
 awk '{print $2}' "$HOME/.ssh/gpu_monitor_ed25519.pub"
@@ -77,3 +70,10 @@ ssh -p 10165 yanxiaoyang@122.207.108.8
 ```
 
 在每台服务器上运行 `cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.gpu-monitor-backup`，然后用编辑器只删除公钥 blob 与上一步输出完全相同的那一行。此远端操作是独立、显式步骤；任何卸载脚本都不会代为执行。
+
+完成所需的远端撤销并确认不再使用专用 SSH 身份与本地配置后，才选择执行：
+
+```bash
+rm -f "$HOME/.ssh/gpu_monitor_ed25519" "$HOME/.ssh/gpu_monitor_ed25519.pub"
+rm -rf "$HOME/Library/Application Support/GPUMonitor"
+```

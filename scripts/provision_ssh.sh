@@ -21,6 +21,63 @@ fail() {
     exit 1
 }
 
+is_parser_integer() {
+    local digits=$1
+    local maximum="9223372036854775807"
+    [[ "$digits" == <-> ]] || return 1
+    while (( ${#digits} > 1 )) && [[ "$digits[1]" == "0" ]]; do
+        digits="${digits[2,-1]}"
+    done
+    (( ${#digits} < ${#maximum} )) && return 0
+    (( ${#digits} == ${#maximum} )) || return 1
+    [[ "$digits" == "$maximum" || "$digits" < "$maximum" ]]
+}
+
+validate_monitor_output() {
+    local output=$1
+    local marker_count=0
+    local gpu_count=0
+    local before_marker=1
+    local line trimmed field
+    local -a fields
+
+    for line in "${(@f)output}"; do
+        trimmed="${line#"${line%%[![:space:]]*}"}"
+        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+        [[ -n "$trimmed" ]] || continue
+        if [[ "$trimmed" == "__GPU_MONITOR_PROCESSES__" ]]; then
+            marker_count=$((marker_count + 1))
+            before_marker=0
+            continue
+        fi
+        (( before_marker )) || continue
+
+        fields=("${(@s:,:)trimmed}")
+        (( ${#fields} == 7 )) || return 1
+        for field in {1..7}; do
+            fields[$field]="${fields[$field]#"${fields[$field]%%[![:space:]]*}"}"
+            fields[$field]="${fields[$field]%"${fields[$field]##*[![:space:]]}"}"
+        done
+        [[ -n "$fields[2]" && -n "$fields[3]" ]] || return 1
+        is_parser_integer "$fields[1]" || return 1
+        for field in 4 5 6 7; do
+            is_parser_integer "$fields[$field]" || return 1
+        done
+        gpu_count=$((gpu_count + 1))
+    done
+
+    (( marker_count == 1 && gpu_count > 0 ))
+}
+
+ssh_bin="/usr/bin/ssh"
+if [[ "${GPU_MONITOR_PROVISIONING_TESTING:-0}" == "1" ]]; then
+    [[ -n "${GPU_MONITOR_TEST_SSH_BIN:-}" && "${GPU_MONITOR_TEST_SSH_BIN}" == /* && -x "${GPU_MONITOR_TEST_SSH_BIN}" ]] ||
+        fail "testing requires an absolute executable GPU_MONITOR_TEST_SSH_BIN"
+    ssh_bin="${GPU_MONITOR_TEST_SSH_BIN}"
+elif [[ -n "${GPU_MONITOR_TEST_SSH_BIN:-}" ]]; then
+    fail "GPU_MONITOR_TEST_SSH_BIN requires GPU_MONITOR_PROVISIONING_TESTING=1"
+fi
+
 umask 077
 /bin/mkdir -p "$ssh_dir" "$app_support_dir"
 /bin/chmod 700 "$ssh_dir"
@@ -33,9 +90,36 @@ fi
 
 [[ -f "$identity_file" ]] || fail "identity is not a regular file: $identity_file"
 /bin/chmod 600 "$identity_file"
-if [[ ! -f "$public_key_file" ]]; then
-    /usr/bin/ssh-keygen -y -f "$identity_file" > "$public_key_file"
+
+derived_public_key=$(/usr/bin/ssh-keygen -y -f "$identity_file") || fail "could not derive the public key from the private key"
+if [[ "$derived_public_key" == *$'\n'* || "$derived_public_key" == *$'\r'* ]] ||
+    ! print -r -- "$derived_public_key" | /usr/bin/ssh-keygen -lf - >/dev/null 2>&1; then
+    fail "the private key produced invalid OpenSSH public-key syntax"
 fi
+key_type="${derived_public_key%% *}"
+derived_remainder="${derived_public_key#* }"
+key_blob="${derived_remainder%% *}"
+[[ "$key_type" == "ssh-ed25519" && -n "$key_blob" ]] ||
+    fail "the dedicated private key did not produce an Ed25519 public key"
+
+if [[ -e "$public_key_file" ]]; then
+    [[ -f "$public_key_file" ]] || fail "public-key path is not a regular file: $public_key_file"
+    /usr/bin/awk '
+        index($0, "\r") != 0 || NR > 1 { invalid = 1 }
+        END { exit(NR == 1 && !invalid ? 0 : 1) }
+    ' "$public_key_file" || fail "the existing public-key file is not exactly one OpenSSH line"
+    /usr/bin/ssh-keygen -lf "$public_key_file" >/dev/null 2>&1 ||
+        fail "the existing public-key file has invalid OpenSSH syntax"
+    existing_public_key="$(<"$public_key_file")"
+    existing_type="${existing_public_key%% *}"
+    existing_remainder="${existing_public_key#* }"
+    existing_blob="${existing_remainder%% *}"
+    [[ "$existing_type" == "$key_type" && "$existing_blob" == "$key_blob" ]] ||
+        fail "the existing public key does not match the dedicated private key"
+fi
+
+canonical_public_key="$key_type $key_blob gpu-monitor-restricted"
+print -r -- "$canonical_public_key" > "$public_key_file"
 /bin/chmod 644 "$public_key_file"
 
 if [[ ! -e "$known_hosts" ]]; then
@@ -44,18 +128,12 @@ fi
 [[ -f "$known_hosts" ]] || fail "known-hosts path is not a regular file: $known_hosts"
 /bin/chmod 600 "$known_hosts"
 
-public_key="$(<"$public_key_file")"
-key_type="${public_key%% *}"
-key_remainder="${public_key#* }"
-key_blob="${key_remainder%% *}"
-[[ "$key_type" == "ssh-ed25519" && -n "$key_blob" ]] || fail "the dedicated public key is not Ed25519"
-
 authorized_options=$(
     /bin/cat <<'OPTIONS'
 no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; printf '\n__GPU_MONITOR_PROCESSES__\n'; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits || true"
 OPTIONS
 )
-authorized_line="$authorized_options $public_key"
+authorized_line="$authorized_options $canonical_public_key"
 
 remote_installer=$( /bin/cat <<'REMOTE_SCRIPT'
 set -eu
@@ -66,10 +144,33 @@ mkdir -p "$ssh_dir"
 chmod 700 "$ssh_dir"
 touch "$authorized_keys"
 chmod 600 "$authorized_keys"
-if awk -v blob="$key_blob" 'index(" " $0 " ", " " blob " ") != 0 { found = 1 } END { exit(found ? 0 : 1) }' "$authorized_keys"; then
+if [ -s "$authorized_keys" ] && [ -n "$(tail -c 1 "$authorized_keys")" ]; then
+    printf '\n' >> "$authorized_keys"
+fi
+blob_count=$(awk -v blob="$key_blob" '
+    {
+        for (field = 1; field <= NF; field++) {
+            if ($field == blob) {
+                count++
+                break
+            }
+        }
+    }
+    END { print count + 0 }
+' "$authorized_keys")
+exact_count=0
+while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "$authorized_line" ]; then
+        exact_count=$((exact_count + 1))
+    fi
+done < "$authorized_keys"
+if [ "$blob_count" -eq 0 ]; then
+    printf '%s\n' "$authorized_line" >> "$authorized_keys"
+elif [ "$blob_count" -eq 1 ] && [ "$exact_count" -eq 1 ]; then
     :
 else
-    printf '%s\n' "$authorized_line" >> "$authorized_keys"
+    printf '%s\n' 'Existing authorized_keys entries for this key are not uniquely and exactly restricted.' >&2
+    exit 1
 fi
 REMOTE_SCRIPT
 )
@@ -85,7 +186,7 @@ for port in $ports; do
         print -r -- "$key_blob"
         print -r -- "$authorized_line"
         print -r -- "$remote_installer"
-    } | /usr/bin/ssh \
+    } | "$ssh_bin" \
         -T \
         -p "$port" \
         -o BatchMode=no \
@@ -115,18 +216,25 @@ for port in $ports; do
         -o UserKnownHostsFile="$known_hosts"
     )
 
-    sample_output=$(/usr/bin/ssh "${ssh_options[@]}" "$destination") ||
+    sample_output=$("$ssh_bin" "${ssh_options[@]}" "$destination") ||
         fail "restricted-key sample failed for port $port"
-    [[ "$sample_output" == *"__GPU_MONITOR_PROCESSES__"* ]] ||
-        fail "restricted-key sample omitted the expected section marker on port $port"
+    validate_monitor_output "$sample_output" ||
+        fail "restricted-key sample was not valid monitor output on port $port"
 
-    forced_output=$(/usr/bin/ssh "${ssh_options[@]}" "$destination" 'echo SHOULD_NOT_RUN') ||
+    forced_output=$("$ssh_bin" "${ssh_options[@]}" "$destination" 'echo SHOULD_NOT_RUN') ||
         fail "forced-command verification failed for port $port"
     if [[ "$forced_output" == *SHOULD_NOT_RUN* ]]; then
         fail "the requested shell command ran on port $port"
     fi
-    [[ "$forced_output" == *"__GPU_MONITOR_PROCESSES__"* ]] ||
-        fail "the forced command did not return monitor output on port $port"
+    validate_monitor_output "$forced_output" ||
+        fail "the forced command did not return valid monitor output on port $port"
+
+    if "$ssh_bin" "${ssh_options[@]}" \
+        -o ExitOnForwardFailure=yes \
+        -R 127.0.0.1:0:127.0.0.1:1 \
+        "$destination" true >/dev/null 2>&1; then
+        fail "the restricted key unexpectedly allowed remote port forwarding on port $port"
+    fi
     print "Restricted key and forced command verified for port $port."
 done
 

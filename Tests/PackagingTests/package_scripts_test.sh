@@ -27,6 +27,18 @@ file_not_contains() {
     [[ -f "$file" ]] && ! /usr/bin/grep -Fiq -- "$needle" "$file"
 }
 
+file_text_precedes() {
+    local file=$1
+    local first=$2
+    local second=$3
+    local first_line second_line
+    [[ -f "$file" ]] || return 1
+    first_line=$(/usr/bin/grep -nF -- "$first" "$file" | /usr/bin/head -1)
+    second_line=$(/usr/bin/grep -nF -- "$second" "$file" | /usr/bin/head -1)
+    [[ -n "$first_line" && -n "$second_line" ]] || return 1
+    (( ${first_line%%:*} < ${second_line%%:*} ))
+}
+
 plist_value_is() {
     local key=$1
     local expected=$2
@@ -59,10 +71,19 @@ check "installer uses exact application destination" file_contains "$install_scr
 check "installer guards the application destination" file_contains "$install_script" '[[ "$install_dir" == "/Applications/GPU Monitor.app" ]] || exit 2'
 check "installer removes only the guarded destination" file_contains "$install_script" 'rm -rf "$install_dir"'
 check "installer does not target an Applications wildcard" file_not_contains "$install_script" '/Applications/*'
+check "installer scopes process handling to the installed executable" file_contains "$install_script" 'installed_executable="$install_dir/Contents/MacOS/GPUMonitor"'
+check "installer scopes process handling to the current uid" file_contains "$install_script" 'current_uid=$(/usr/bin/id -u)'
+check "installer reads executable paths rather than basenames" file_contains "$install_script" '/bin/ps -axo pid=,uid=,comm='
+check "installer requires an exact installed executable match" file_contains "$install_script" '"$process_executable" == "$installed_executable"'
+check "installer does not use global pgrep matching" file_not_contains "$install_script" 'pgrep'
+check "installer does not use global pkill matching" file_not_contains "$install_script" 'pkill'
 
 forced_command='command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; printf '\''\n__GPU_MONITOR_PROCESSES__\n'\''; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits || true"'
 check "provisioner installs the exact forced command" file_contains "$provision_script" "$forced_command"
 check "provisioner allows no command-line arguments" file_contains "$provision_script" '[[ $# -eq 0 ]]'
+check "provisioner gates the fake SSH override" file_contains "$provision_script" 'GPU_MONITOR_PROVISIONING_TESTING'
+check "provisioner defaults to the absolute system SSH" file_contains "$provision_script" 'ssh_bin="/usr/bin/ssh"'
+check "provisioner derives trusted key material from the private key" file_contains "$provision_script" 'ssh-keygen -y -f "$identity_file"'
 check "provisioner uses the dedicated SSH directory" file_contains "$provision_script" 'ssh_dir="$HOME/.ssh"'
 check "provisioner uses the dedicated identity" file_contains "$provision_script" 'identity_file="$ssh_dir/gpu_monitor_ed25519"'
 check "provisioner uses the dedicated application-support directory" file_contains "$provision_script" 'app_support_dir="$HOME/Library/Application Support/GPUMonitor"'
@@ -73,7 +94,11 @@ check "first connection accepts only new host keys" file_contains "$provision_sc
 check "verification is noninteractive" file_contains "$provision_script" 'BatchMode=yes'
 check "forced-command test requests a forbidden shell command" file_contains "$provision_script" 'echo SHOULD_NOT_RUN'
 check "forced-command test fails on forbidden output" file_contains "$provision_script" '*SHOULD_NOT_RUN*'
-check "authorized_keys installation searches for the public-key blob" file_contains "$provision_script" 'key_blob'
+check "authorized_keys installation counts exact matching lines" file_contains "$provision_script" 'exact_count'
+check "authorized_keys installation counts all matching blobs" file_contains "$provision_script" 'blob_count'
+check "provisioner tests remote ephemeral forwarding" file_contains "$provision_script" 'ExitOnForwardFailure=yes'
+check "provisioner requests a remote ephemeral forward" file_contains "$provision_script" '-R 127.0.0.1:0:127.0.0.1:1'
+check "provisioner validates full monitor output" file_contains "$provision_script" 'validate_monitor_output'
 check "provisioner reports a learned fingerprint" file_contains "$provision_script" 'ssh-keygen -lf'
 
 check "README has exact repository command" file_contains "$readme" 'cd /Users/yxy/Documents/workspace/gpu-monitor'
@@ -85,6 +110,8 @@ check "README documents no login-item setup" file_contains "$readme" '不配置�
 check "README documents privacy" file_contains "$readme" '隐私'
 check "README documents server editing" file_contains "$readme" 'servers.json'
 check "README keeps remote-key removal explicit" file_contains "$readme" 'authorized_keys'
+check "README records the public blob before deleting its file" file_text_precedes "$readme" 'awk '\''{print $2}'\'' "$HOME/.ssh/gpu_monitor_ed25519.pub"' 'rm -f "$HOME/.ssh/gpu_monitor_ed25519"'
+check "README does not claim unsupported polling fields" file_not_contains "$readme" '轮询参数'
 
 if (( failures > 0 )); then
     print -u2 "$failures packaging checks failed"
