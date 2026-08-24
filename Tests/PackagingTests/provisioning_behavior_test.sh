@@ -135,6 +135,8 @@ run_provisioner() {
         GPU_MONITOR_TEST_FORWARD_ALLOWED="${forward_allowed:-0}" \
         GPU_MONITOR_TEST_FORWARD_UNRELATED_FAILURE="${forward_unrelated_failure:-0}" \
         GPU_MONITOR_TEST_FORWARD_CRLF="${forward_crlf:-0}" \
+        GPU_MONITOR_TEST_FORWARD_STYLE="${forward_style:-error}" \
+        GPU_MONITOR_TEST_FORWARD_MULTILINE="${forward_multiline:-0}" \
         "$provisioner" >"$stdout_log" 2>"$stderr_log"
 }
 
@@ -371,6 +373,34 @@ else
     record_failure "exact forwarding rejection with CRLF is accepted"
 fi
 unset forward_crlf
+
+new_case forwarding_rejected_bare_lf
+forward_style=bare
+if run_provisioner; then
+    record_pass "exact bare forwarding rejection with LF is accepted"
+else
+    record_failure "exact bare forwarding rejection with LF is accepted"
+fi
+unset forward_style
+
+new_case forwarding_rejected_warning_crlf
+forward_style=warning
+forward_crlf=1
+if run_provisioner; then
+    record_pass "exact warning forwarding rejection with CRLF is accepted"
+else
+    record_failure "exact warning forwarding rejection with CRLF is accepted"
+fi
+unset forward_crlf forward_style
+
+new_case forwarding_mixed_multiline_crlf
+forward_multiline=1
+if run_provisioner; then
+    record_failure "accepted forwarding line plus unrelated CRLF line fails closed"
+else
+    record_pass "accepted forwarding line plus unrelated CRLF line fails closed"
+fi
+unset forward_multiline
 
 new_case forwarding_unrelated_crlf
 forward_crlf=1

@@ -266,12 +266,17 @@ for port in $ports; do
     else
         forwarding_status=$?
     fi
-    forwarding_stderr="${forwarding_stderr//$'\r'/}"
-    if (( forwarding_status != 255 )) ||
-        ! print -r -- "$forwarding_stderr" |
-            /usr/bin/grep -Eq '^(Error: |Warning: )?remote port forwarding failed for listen port 0$'; then
+    forwarding_stderr="${forwarding_stderr%$'\r'}"
+    if (( forwarding_status != 255 )); then
         fail "could not prove that the server explicitly rejected remote port forwarding on port $port"
     fi
+    case "$forwarding_stderr" in
+        'remote port forwarding failed for listen port 0'|'Error: remote port forwarding failed for listen port 0'|'Warning: remote port forwarding failed for listen port 0')
+            ;;
+        *)
+            fail "could not prove that the server explicitly rejected remote port forwarding on port $port"
+            ;;
+    esac
     print "Restricted key and forced command verified for port $port."
 done
 

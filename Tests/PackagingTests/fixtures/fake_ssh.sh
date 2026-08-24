@@ -41,7 +41,18 @@ while (( $# > 0 )); do
     esac
 done
 
+case "${GPU_MONITOR_TEST_FORWARD_STYLE:-error}" in
+    bare) forward_prefix='' ;;
+    error) forward_prefix='Error: ' ;;
+    warning) forward_prefix='Warning: ' ;;
+    *) exit 94 ;;
+esac
+
 if (( has_remote_forward )); then
+    if [[ "${GPU_MONITOR_TEST_FORWARD_MULTILINE:-0}" == "1" ]]; then
+        /usr/bin/printf '%sremote port forwarding failed for listen port 0\r\nunrelated diagnostic\r\n' "$forward_prefix" >&2
+        exit 255
+    fi
     if [[ "${GPU_MONITOR_TEST_FORWARD_UNRELATED_FAILURE:-0}" == "1" ]]; then
         if [[ "${GPU_MONITOR_TEST_FORWARD_CRLF:-0}" == "1" ]]; then
             /usr/bin/printf 'ssh: connect to host 122.207.108.8 port 10122: Connection refused\r\n' >&2
@@ -52,9 +63,9 @@ if (( has_remote_forward )); then
     fi
     [[ "${GPU_MONITOR_TEST_FORWARD_ALLOWED:-0}" == "1" ]] && exit 0
     if [[ "${GPU_MONITOR_TEST_FORWARD_CRLF:-0}" == "1" ]]; then
-        /usr/bin/printf 'Error: remote port forwarding failed for listen port 0\r\n' >&2
+        /usr/bin/printf '%sremote port forwarding failed for listen port 0\r\n' "$forward_prefix" >&2
     else
-        print -u2 'Error: remote port forwarding failed for listen port 0'
+        print -ru2 -- "${forward_prefix}remote port forwarding failed for listen port 0"
     fi
     exit 255
 fi
