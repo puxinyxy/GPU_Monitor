@@ -41,6 +41,7 @@ public enum NotificationAuthorizationState: Equatable, Sendable {
     case denied
     case provisional
     case ephemeral
+    case compatibility
     case error
 }
 

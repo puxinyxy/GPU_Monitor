@@ -2,6 +2,48 @@ import AppKit
 import GPUMonitorCore
 import SwiftUI
 
+enum NotificationStatusTone: Equatable, Sendable {
+    case secondary
+    case success
+    case compatibility
+    case failure
+}
+
+struct NotificationStatusDisplay: Equatable, Sendable {
+    let text: String
+    let systemImage: String
+    let tone: NotificationStatusTone
+
+    init(_ state: NotificationAuthorizationState) {
+        switch state {
+        case .notDetermined:
+            text = "通知：待授权"
+            systemImage = "bell.badge"
+            tone = .secondary
+        case .authorized:
+            text = "通知：已授权"
+            systemImage = "bell.fill"
+            tone = .success
+        case .denied:
+            text = "通知：未授权"
+            systemImage = "bell.slash.fill"
+            tone = .failure
+        case .provisional, .ephemeral:
+            text = "通知：临时授权"
+            systemImage = "bell.fill"
+            tone = .success
+        case .compatibility:
+            text = "通知：兼容模式"
+            systemImage = "bell.fill"
+            tone = .compatibility
+        case .error:
+            text = "通知：状态错误"
+            systemImage = "bell.badge"
+            tone = .failure
+        }
+    }
+}
+
 struct GPUDisplayText: Equatable, Sendable {
     let occupancy: String
     let metrics: String
@@ -195,10 +237,11 @@ private struct StatusFooter: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
+        let notification = NotificationStatusDisplay(model.notificationAuthorization)
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label(notificationText, systemImage: notificationImage)
-                    .foregroundStyle(notificationColor)
+                Label(notification.text, systemImage: notification.systemImage)
+                    .foregroundStyle(notificationColor(for: notification.tone))
                 Spacer()
                 Text(lastUpdatedText)
                     .foregroundStyle(.secondary)
@@ -235,30 +278,12 @@ private struct StatusFooter: View {
         return "上次更新：\(lastUpdated.formatted(date: .omitted, time: .standard))"
     }
 
-    private var notificationText: String {
-        switch model.notificationAuthorization {
-        case .notDetermined: "通知：待授权"
-        case .authorized: "通知：已授权"
-        case .denied: "通知：未授权"
-        case .provisional: "通知：临时授权"
-        case .ephemeral: "通知：临时授权"
-        case .error: "通知：状态错误"
-        }
-    }
-
-    private var notificationImage: String {
-        switch model.notificationAuthorization {
-        case .authorized, .provisional, .ephemeral: "bell.fill"
-        case .denied: "bell.slash.fill"
-        case .notDetermined, .error: "bell.badge"
-        }
-    }
-
-    private var notificationColor: Color {
-        switch model.notificationAuthorization {
-        case .authorized, .provisional, .ephemeral: .green
-        case .denied, .error: .red
-        case .notDetermined: .secondary
+    private func notificationColor(for tone: NotificationStatusTone) -> Color {
+        switch tone {
+        case .secondary: .secondary
+        case .success: .green
+        case .compatibility: .orange
+        case .failure: .red
         }
     }
 }
