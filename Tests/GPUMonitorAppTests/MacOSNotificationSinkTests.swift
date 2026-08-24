@@ -77,6 +77,84 @@ private actor CancellingCompatibilityNotificationClient: CompatibilityNotificati
     }
 }
 
+private actor ControlledAuthorizationNotificationCenter: UserNotificationCenterClient {
+    private let immediateStates: [Int: NotificationAuthorizationState]
+    private var authorizationStateReadCount = 0
+    private var stateContinuations: [
+        Int: CheckedContinuation<NotificationAuthorizationState, Never>
+    ] = [:]
+    private var readCountWaiters: [(
+        count: Int,
+        continuation: CheckedContinuation<Void, Never>
+    )] = []
+    private var requests: [MacOSNotificationRequest] = []
+
+    init(immediateStates: [Int: NotificationAuthorizationState] = [:]) {
+        self.immediateStates = immediateStates
+    }
+
+    func requestAuthorization() async throws -> NotificationAuthorizationState {
+        throw notificationsNotAllowedError()
+    }
+
+    func authorizationState() async -> NotificationAuthorizationState {
+        let index = authorizationStateReadCount
+        authorizationStateReadCount += 1
+        resumeSatisfiedReadCountWaiters()
+        if let state = immediateStates[index] { return state }
+        return await withCheckedContinuation { continuation in
+            stateContinuations[index] = continuation
+        }
+    }
+
+    func add(_ request: MacOSNotificationRequest) async throws {
+        requests.append(request)
+    }
+
+    func waitForAuthorizationStateReadCount(_ count: Int) async {
+        guard authorizationStateReadCount < count else { return }
+        await withCheckedContinuation { continuation in
+            readCountWaiters.append((count, continuation))
+        }
+    }
+
+    func resolveAuthorizationStateRead(
+        _ index: Int,
+        with state: NotificationAuthorizationState
+    ) {
+        stateContinuations.removeValue(forKey: index)?.resume(returning: state)
+    }
+
+    private func resumeSatisfiedReadCountWaiters() {
+        let satisfied = readCountWaiters.filter { $0.count <= authorizationStateReadCount }
+        readCountWaiters.removeAll { $0.count <= authorizationStateReadCount }
+        for waiter in satisfied {
+            waiter.continuation.resume()
+        }
+    }
+}
+
+private actor ManualTestGate {
+    private var isOpen = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let waiting = continuations
+        continuations.removeAll()
+        for continuation in waiting {
+            continuation.resume()
+        }
+    }
+}
+
 private let notificationTestServer = ServerConfig(
     id: "server-test",
     label: "Test Server",
@@ -302,6 +380,138 @@ private func notificationsNotAllowedError() -> NSError {
     ])
 
     #expect(await compatibility.callCount == 1)
+    #expect(result.attemptedCount == 2)
+    #expect(result.deliveredCount == 0)
+    #expect(result.failures.map(\.messageIndex) == [0, 1])
+}
+
+@Test func compatibilitySendRevalidatesNativeDenialWithoutAStatusRefresh() async {
+    let center = FakeNotificationCenter(
+        authorizationResult: .failure(notificationsNotAllowedError()),
+        currentState: .notDetermined
+    )
+    let compatibility = FakeCompatibilityNotificationClient()
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+    #expect(await sink.requestAuthorization() == .compatibility)
+
+    await center.setCurrentState(.denied)
+    let result = await sink.send(events: [.serverRecovered(server: notificationTestServer)])
+
+    #expect(result.isSuccess)
+    #expect(await compatibility.messages.isEmpty)
+    #expect(await center.recordedRequests.count == 1)
+}
+
+@Test func staleAuthorizationStateReadCannotRestoreCompatibilityOverDenial() async {
+    let center = ControlledAuthorizationNotificationCenter(immediateStates: [0: .notDetermined])
+    let sink = MacOSNotificationSink(
+        center: center,
+        compatibility: FakeCompatibilityNotificationClient()
+    )
+    #expect(await sink.requestAuthorization() == .compatibility)
+
+    let olderRead = Task { await sink.authorizationState() }
+    await center.waitForAuthorizationStateReadCount(2)
+    let newerRead = Task { await sink.authorizationState() }
+    await center.waitForAuthorizationStateReadCount(3)
+
+    await center.resolveAuthorizationStateRead(2, with: .denied)
+    #expect(await newerRead.value == .denied)
+    await center.resolveAuthorizationStateRead(1, with: .notDetermined)
+    #expect(await olderRead.value == .denied)
+}
+
+@Test func staleAuthorizationRequestCannotRestoreCompatibilityOverDenial() async {
+    let center = ControlledAuthorizationNotificationCenter()
+    let sink = MacOSNotificationSink(
+        center: center,
+        compatibility: FakeCompatibilityNotificationClient()
+    )
+
+    let olderRequest = Task { await sink.requestAuthorization() }
+    await center.waitForAuthorizationStateReadCount(1)
+    let newerRead = Task { await sink.authorizationState() }
+    await center.waitForAuthorizationStateReadCount(2)
+
+    await center.resolveAuthorizationStateRead(1, with: .denied)
+    #expect(await newerRead.value == .denied)
+    await center.resolveAuthorizationStateRead(0, with: .notDetermined)
+    #expect(await olderRequest.value == .denied)
+}
+
+@Test func nativeCompatibilityStateCannotActivateCompatibilityDelivery() async {
+    let center = FakeNotificationCenter(
+        authorizationResult: .success(.compatibility),
+        currentState: .compatibility
+    )
+    let compatibility = FakeCompatibilityNotificationClient()
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+
+    #expect(await sink.requestAuthorization() == .error)
+    #expect(await sink.authorizationState() == .error)
+    _ = await sink.send(events: [.serverRecovered(server: notificationTestServer)])
+
+    #expect(await compatibility.messages.isEmpty)
+    #expect(await center.recordedRequests.count == 1)
+}
+
+@Test func nativeNotDeterminedStateDoesNotActivateCompatibilityDelivery() async {
+    let center = FakeNotificationCenter(currentState: .notDetermined)
+    let compatibility = FakeCompatibilityNotificationClient()
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+
+    #expect(await sink.authorizationState() == .notDetermined)
+    _ = await sink.send(events: [.serverRecovered(server: notificationTestServer)])
+
+    #expect(await compatibility.messages.isEmpty)
+    #expect(await center.recordedRequests.count == 1)
+}
+
+@Test func cancellationBeforeSendStartsSkipsAllCompatibilityDelivery() async {
+    let center = FakeNotificationCenter(
+        authorizationResult: .failure(notificationsNotAllowedError()),
+        currentState: .notDetermined
+    )
+    let compatibility = FakeCompatibilityNotificationClient()
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+    let gate = ManualTestGate()
+    _ = await sink.requestAuthorization()
+
+    let delivery = Task {
+        await gate.wait()
+        return await sink.send(events: [
+            .serverRecovered(server: notificationTestServer),
+            .serverOffline(server: notificationTestServer, message: "offline"),
+        ])
+    }
+    delivery.cancel()
+    await gate.open()
+    let result = await delivery.value
+
+    #expect(await compatibility.messages.isEmpty)
+    #expect(result.attemptedCount == 2)
+    #expect(result.deliveredCount == 0)
+    #expect(result.failures.map(\.messageIndex) == [0, 1])
+}
+
+@Test func cancellationDuringCompatibilityRevalidationAccountsForTheSuffixOnce() async {
+    let center = ControlledAuthorizationNotificationCenter(immediateStates: [0: .notDetermined])
+    let compatibility = FakeCompatibilityNotificationClient()
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+    _ = await sink.requestAuthorization()
+
+    let delivery = Task {
+        await sink.send(events: [
+            .serverRecovered(server: notificationTestServer),
+            .serverOffline(server: notificationTestServer, message: "offline"),
+        ])
+    }
+    await center.waitForAuthorizationStateReadCount(2)
+    delivery.cancel()
+    await center.resolveAuthorizationStateRead(1, with: .notDetermined)
+    let result = await delivery.value
+
+    #expect(await compatibility.messages.isEmpty)
     #expect(result.attemptedCount == 2)
     #expect(result.deliveredCount == 0)
     #expect(result.failures.map(\.messageIndex) == [0, 1])
