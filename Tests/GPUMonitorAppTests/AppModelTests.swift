@@ -166,6 +166,117 @@ private actor CancellationAwareAuthorizationNotifications: NotificationSink, Not
     }
 }
 
+private actor NonCooperativeAuthorizationNotifications: NotificationSink, NotificationAuthorizationProviding {
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var authorizationContinuation: CheckedContinuation<NotificationAuthorizationState, Never>?
+    private var started = false
+
+    func requestAuthorization() async -> NotificationAuthorizationState {
+        await withCheckedContinuation { continuation in
+            authorizationContinuation = continuation
+            started = true
+            startedWaiter?.resume()
+            startedWaiter = nil
+        }
+    }
+
+    func authorizationState() async -> NotificationAuthorizationState { .notDetermined }
+
+    func send(events: [MonitorEvent]) async -> NotificationDeliveryResult {
+        .init(attemptedCount: 0, deliveredCount: 0, failures: [])
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func release() {
+        authorizationContinuation?.resume(returning: .authorized)
+        authorizationContinuation = nil
+    }
+}
+
+private actor NonCooperativeDeliveryNotifications: NotificationSink, NotificationAuthorizationProviding {
+    private var deliveryStartedWaiter: CheckedContinuation<Void, Never>?
+    private var deliveryContinuation: CheckedContinuation<NotificationDeliveryResult, Never>?
+    private var deliveryStarted = false
+
+    func requestAuthorization() async -> NotificationAuthorizationState { .authorized }
+
+    func authorizationState() async -> NotificationAuthorizationState { .authorized }
+
+    func send(events: [MonitorEvent]) async -> NotificationDeliveryResult {
+        deliveryStarted = true
+        deliveryStartedWaiter?.resume()
+        deliveryStartedWaiter = nil
+        return await withCheckedContinuation { deliveryContinuation = $0 }
+    }
+
+    func waitUntilDeliveryStarts() async {
+        guard !deliveryStarted else { return }
+        await withCheckedContinuation { deliveryStartedWaiter = $0 }
+    }
+
+    func release() {
+        deliveryContinuation?.resume(returning: .init(
+            attemptedCount: 0,
+            deliveredCount: 0,
+            failures: []
+        ))
+        deliveryContinuation = nil
+    }
+}
+
+private actor CompletionFlag {
+    private(set) var completed = false
+
+    func markCompleted() {
+        completed = true
+    }
+}
+
+private actor ShutdownGatePoll {
+    private var pollStartedWaiter: CheckedContinuation<Void, Never>?
+    private var pollContinuation: CheckedContinuation<MonitorCycle, Never>?
+    private var cancellationStartedWaiter: CheckedContinuation<Void, Never>?
+    private var cancellationReleases: [CheckedContinuation<Void, Never>] = []
+    private(set) var pollCalls = 0
+    private(set) var cancellationRequests = 0
+
+    func poll() async -> MonitorCycle {
+        pollCalls += 1
+        pollStartedWaiter?.resume()
+        pollStartedWaiter = nil
+        return await withCheckedContinuation { pollContinuation = $0 }
+    }
+
+    func cancelActivePoll() async {
+        cancellationRequests += 1
+        cancellationStartedWaiter?.resume()
+        cancellationStartedWaiter = nil
+        await withCheckedContinuation { cancellationReleases.append($0) }
+        pollContinuation?.resume(returning: cycle(snapshots: [:], health: [:]))
+        pollContinuation = nil
+    }
+
+    func waitUntilPollStarts() async {
+        guard pollCalls == 0 else { return }
+        await withCheckedContinuation { pollStartedWaiter = $0 }
+    }
+
+    func waitUntilCancellationStarts() async {
+        guard cancellationRequests == 0 else { return }
+        await withCheckedContinuation { cancellationStartedWaiter = $0 }
+    }
+
+    func releaseCancellation() {
+        let releases = cancellationReleases
+        cancellationReleases.removeAll()
+        releases.forEach { $0.resume() }
+    }
+}
+
 private actor CancellationControlledPoll {
     private var startedWaiter: CheckedContinuation<Void, Never>?
     private var resultContinuation: CheckedContinuation<MonitorCycle, Never>?
@@ -482,6 +593,157 @@ func stopCancelsStartupBeforeItCanPollOrInstallTheTimer() async {
     #expect(await source.calls == 0)
     #expect(await sleeper.requestedDurations.isEmpty)
     #expect(!model.isRefreshing)
+}
+
+@Test @MainActor
+func stopIsTerminalAndSharesShutdownAcrossReentrantLifecycleCalls() async {
+    let poll = ShutdownGatePoll()
+    let notifications = FakeNotifications()
+    let sleeper = ControlledSleeper()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { await poll.poll() },
+        cancelPoll: { await poll.cancelActivePoll() },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { try await sleeper.sleep(for: $0) }
+    )
+    let refreshTask = Task { await model.refresh() }
+    await poll.waitUntilPollStarts()
+    let firstStopFinished = CompletionFlag()
+    let firstStop = Task {
+        await model.stop()
+        await firstStopFinished.markCompleted()
+    }
+    await poll.waitUntilCancellationStarts()
+
+    let reentrantStartFinished = CompletionFlag()
+    let reentrantStart = Task {
+        await model.start()
+        await reentrantStartFinished.markCompleted()
+    }
+    let reentrantRefreshFinished = CompletionFlag()
+    let reentrantRefresh = Task {
+        await model.refresh()
+        await reentrantRefreshFinished.markCompleted()
+    }
+    let secondStopFinished = CompletionFlag()
+    let secondStop = Task {
+        await model.stop()
+        await secondStopFinished.markCompleted()
+    }
+    for _ in 0..<100 { await Task.yield() }
+
+    #expect(await reentrantStartFinished.completed)
+    #expect(await reentrantRefreshFinished.completed)
+    #expect(!(await firstStopFinished.completed))
+    #expect(!(await secondStopFinished.completed))
+    #expect(await poll.pollCalls == 1)
+    #expect(await poll.cancellationRequests == 1)
+
+    await poll.releaseCancellation()
+    await firstStop.value
+    await secondStop.value
+    await refreshTask.value
+    await reentrantStart.value
+    await reentrantRefresh.value
+    #expect(await sleeper.requestedDurations.isEmpty)
+}
+
+@Test @MainActor
+func completedStopPermanentlyRejectsStartAndRefresh() async {
+    let source = CycleSource([cycle(snapshots: [:], health: [:])])
+    let notifications = FakeNotifications()
+    let sleeper = ControlledSleeper()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { await source.poll() },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { try await sleeper.sleep(for: $0) }
+    )
+
+    await model.stop()
+    await model.start()
+    await model.refresh()
+
+    #expect(await source.calls == 0)
+    #expect(await sleeper.requestedDurations.isEmpty)
+    await model.stop()
+}
+
+@Test @MainActor
+func stopDoesNotWaitForNonCooperativeAuthorization() async {
+    let source = CycleSource([cycle(snapshots: [:], health: [:])])
+    let notifications = NonCooperativeAuthorizationNotifications()
+    let sleeper = ControlledSleeper()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { await source.poll() },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { try await sleeper.sleep(for: $0) }
+    )
+    let startTask = Task { await model.start() }
+    await notifications.waitUntilStarted()
+    let stopFinished = CompletionFlag()
+    let stopTask = Task {
+        await model.stop()
+        await stopFinished.markCompleted()
+    }
+
+    for _ in 0..<200 where !(await stopFinished.completed) {
+        try? await ContinuousClock().sleep(for: .milliseconds(1))
+    }
+    #expect(await stopFinished.completed)
+    #expect(await source.calls == 0)
+    #expect(await sleeper.requestedDurations.isEmpty)
+
+    await notifications.release()
+    await stopTask.value
+    await startTask.value
+    #expect(await source.calls == 0)
+    #expect(await sleeper.requestedDurations.isEmpty)
+}
+
+@Test @MainActor
+func stopDoesNotWaitForNonCooperativeNotificationDeliveryOrApplyItsLateResult() async {
+    let completedCycle = cycle(
+        snapshots: [server10222.id: snapshot(server: server10222, gpus: [gpu(index: 0, busy: false)])],
+        health: [server10222.id: .online]
+    )
+    let source = CycleSource([completedCycle])
+    let notifications = NonCooperativeDeliveryNotifications()
+    let model = AppModel(
+        servers: [server10222],
+        poll: { await source.poll() },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { _ in throw CancellationError() }
+    )
+    let refreshTask = Task { await model.refresh() }
+    await notifications.waitUntilDeliveryStarts()
+    let stopFinished = CompletionFlag()
+    let stopTask = Task {
+        await model.stop()
+        await stopFinished.markCompleted()
+    }
+
+    for _ in 0..<200 where !(await stopFinished.completed) {
+        try? await ContinuousClock().sleep(for: .milliseconds(1))
+    }
+    #expect(await stopFinished.completed)
+    #expect(await source.calls == 1)
+    #expect(model.snapshots.isEmpty)
+
+    await model.start()
+    await model.refresh()
+    #expect(await source.calls == 1)
+
+    await notifications.release()
+    await stopTask.value
+    await refreshTask.value
+    #expect(model.snapshots.isEmpty)
 }
 
 @Test @MainActor

@@ -28,6 +28,7 @@ public actor MonitorCoordinator {
     private let servers: [ServerConfig]
     private let probe: any GPUProbing
     private let tracker: StateTracker
+    private let beforeCancellationCleanup: @Sendable () async -> Void
     private var activePoll: ActivePoll?
     private var nextPollGeneration: UInt64 = 0
 
@@ -39,9 +40,36 @@ public actor MonitorCoordinator {
         self.servers = servers
         self.probe = probe
         self.tracker = tracker
+        self.beforeCancellationCleanup = {}
+    }
+
+    @_spi(Testing)
+    public init(
+        servers: [ServerConfig],
+        probe: any GPUProbing,
+        tracker: StateTracker = StateTracker(confirmationCount: 2, offlineFailureCount: 3),
+        beforeCancellationCleanup: @escaping @Sendable () async -> Void
+    ) {
+        self.servers = servers
+        self.probe = probe
+        self.tracker = tracker
+        self.beforeCancellationCleanup = beforeCancellationCleanup
     }
 
     public func poll() async -> MonitorCycle {
+        await performPoll(beforeCleanup: {})
+    }
+
+    @_spi(Testing)
+    public func poll(
+        beforeCleanup: @Sendable () async -> Void
+    ) async -> MonitorCycle {
+        await performPoll(beforeCleanup: beforeCleanup)
+    }
+
+    private func performPoll(
+        beforeCleanup: @Sendable () async -> Void
+    ) async -> MonitorCycle {
         let poll: ActivePoll
         if let activePoll {
             poll = activePoll
@@ -55,6 +83,7 @@ public actor MonitorCoordinator {
         }
 
         let cycle = await poll.task.value
+        await beforeCleanup()
         if activePoll?.generation == poll.generation {
             activePoll = nil
         }
@@ -65,6 +94,7 @@ public actor MonitorCoordinator {
         guard let poll = activePoll else { return }
         poll.task.cancel()
         _ = await poll.task.value
+        await beforeCancellationCleanup()
         if activePoll?.generation == poll.generation {
             activePoll = nil
         }
@@ -98,6 +128,8 @@ public actor MonitorCoordinator {
                 update = await tracker.recordSuccess(snapshot)
             case let .failure(message):
                 update = await tracker.recordFailure(server: outcome.server, message: message)
+            case .cancelled:
+                continue
             }
 
             if let stableSnapshot = update.stableSnapshot {
@@ -120,6 +152,7 @@ private struct ProbeOutcome: Sendable {
     enum Result: Sendable {
         case success(ServerSnapshot)
         case failure(String)
+        case cancelled
     }
 
     let index: Int
@@ -137,6 +170,8 @@ private struct ProbeOutcome: Sendable {
                 server: server,
                 result: .success(try await probe.sample(server: server))
             )
+        } catch is CancellationError {
+            return ProbeOutcome(index: index, server: server, result: .cancelled)
         } catch {
             return ProbeOutcome(
                 index: index,

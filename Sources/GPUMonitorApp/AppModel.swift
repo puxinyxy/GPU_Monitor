@@ -42,6 +42,13 @@ public final class AppModel: ObservableObject {
         let task: Task<RefreshResult?, Never>
     }
 
+    private enum LifecycleState {
+        case idle
+        case running
+        case stopping
+        case stopped
+    }
+
     @Published public private(set) var snapshots: [String: ServerSnapshot] = [:]
     @Published public private(set) var health: [String: ServerHealth] = [:]
     @Published public private(set) var isRefreshing = false
@@ -59,12 +66,14 @@ public final class AppModel: ObservableObject {
     private let authorizationProvider: any NotificationAuthorizationProviding
     private let sleep: Sleep
     private let pollInterval: Duration
-    private var started = false
+    private var lifecycleState: LifecycleState = .idle
     private var lifecycleGeneration: UInt64 = 0
     private var startupTask: Task<Void, Never>?
     private var loopTask: Task<Void, Never>?
     private var nextRefreshGeneration: UInt64 = 0
     private var activeRefresh: ActiveRefresh?
+    private var shutdownTask: Task<Void, Never>?
+    private var shutdownGeneration: UInt64?
 
     public init(
         servers: [ServerConfig],
@@ -114,11 +123,16 @@ public final class AppModel: ObservableObject {
     }
 
     public func start() async {
-        guard !started else {
+        switch lifecycleState {
+        case .stopping, .stopped:
+            return
+        case .running:
             if let startupTask { await startupTask.value }
             return
+        case .idle:
+            break
         }
-        started = true
+        lifecycleState = .running
         lifecycleGeneration &+= 1
         let generation = lifecycleGeneration
         let task = Task<Void, Never> { [weak self] in
@@ -134,6 +148,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func refresh() async {
+        guard lifecycleState != .stopping, lifecycleState != .stopped else { return }
         let refresh: ActiveRefresh
         if let activeRefresh {
             refresh = activeRefresh
@@ -166,8 +181,22 @@ public final class AppModel: ObservableObject {
     }
 
     public func stop() async {
-        started = false
+        switch lifecycleState {
+        case .stopped:
+            return
+        case .stopping:
+            let shutdown = shutdownTask
+            let generation = shutdownGeneration
+            if let shutdown { await shutdown.value }
+            completeShutdown(generation: generation)
+            return
+        case .idle, .running:
+            break
+        }
+
+        lifecycleState = .stopping
         lifecycleGeneration &+= 1
+        let generation = lifecycleGeneration
         let startup = startupTask
         let loop = loopTask
         let refresh = activeRefresh
@@ -177,16 +206,13 @@ public final class AppModel: ObservableObject {
         loop?.cancel()
         refresh?.task.cancel()
 
-        await cancelPoll()
-        if let refresh {
-            _ = await refresh.task.value
-            if activeRefresh?.generation == refresh.generation {
-                activeRefresh = nil
-                isRefreshing = false
-            }
+        let shutdown = Task<Void, Never> { [cancelPoll] in
+            await cancelPoll()
         }
-        if let startup { await startup.value }
-        if let loop { await loop.value }
+        shutdownGeneration = generation
+        shutdownTask = shutdown
+        await shutdown.value
+        completeShutdown(generation: generation)
     }
 
     public var menuTitle: String {
@@ -250,7 +276,20 @@ public final class AppModel: ObservableObject {
     }
 
     private func isActiveLifecycle(_ generation: UInt64) -> Bool {
-        started && lifecycleGeneration == generation && !Task.isCancelled
+        lifecycleState == .running && lifecycleGeneration == generation && !Task.isCancelled
+    }
+
+    private func completeShutdown(generation: UInt64?) {
+        guard lifecycleState == .stopping,
+              let generation,
+              shutdownGeneration == generation else {
+            return
+        }
+        activeRefresh = nil
+        isRefreshing = false
+        shutdownTask = nil
+        shutdownGeneration = nil
+        lifecycleState = .stopped
     }
 
     private func apply(_ cycle: MonitorCycle) {
@@ -273,5 +312,6 @@ public final class AppModel: ObservableObject {
         startupTask?.cancel()
         loopTask?.cancel()
         activeRefresh?.task.cancel()
+        shutdownTask?.cancel()
     }
 }

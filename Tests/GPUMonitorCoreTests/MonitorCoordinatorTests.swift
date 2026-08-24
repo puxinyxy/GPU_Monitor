@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import GPUMonitorCore
+@_spi(Testing) import GPUMonitorCore
 
 extension ControlledProbe: GPUProbing {
     func sample(server: ServerConfig) async throws -> ServerSnapshot {
@@ -104,6 +104,29 @@ private actor BooleanObservation {
     }
 
     var recordedValue: Bool? { value }
+}
+
+private actor CancellationCleanupGate {
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var entered = false
+
+    func pause() async {
+        entered = true
+        enteredWaiter?.resume()
+        enteredWaiter = nil
+        await withCheckedContinuation { releaseContinuation = $0 }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiter = $0 }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
 }
 
 private actor PollCallerHarness {
@@ -221,6 +244,49 @@ private actor CancellationGateProbe: GPUProbing {
         cancelledGenerations.append(generation)
         releases.removeValue(forKey: generation)?.resume(throwing: CancellationError())
     }
+
+    func releaseAllAndExpireWaiters(server: ServerConfig = .server10222) {
+        let pendingReleases = releases.values
+        let pendingWaiters = startedWaiters.values
+        releases.removeAll()
+        startedWaiters.removeAll()
+        for release in pendingReleases {
+            release.resume(returning: .snapshot(.free, server: server))
+        }
+        for waiter in pendingWaiters {
+            waiter.resume()
+        }
+    }
+}
+
+private actor CancellationThenFailureProbe: GPUProbing {
+    private var firstStartedWaiter: CheckedContinuation<Void, Never>?
+    private var firstContinuation: CheckedContinuation<ServerSnapshot, Error>?
+    private(set) var sampleCount = 0
+
+    func sample(server: ServerConfig) async throws -> ServerSnapshot {
+        sampleCount += 1
+        guard sampleCount == 1 else { throw TestError.unreachable }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                firstContinuation = continuation
+                firstStartedWaiter?.resume()
+                firstStartedWaiter = nil
+            }
+        } onCancel: {
+            Task { await self.releaseCancellation() }
+        }
+    }
+
+    func waitUntilFirstStarts() async {
+        guard sampleCount == 0 else { return }
+        await withCheckedContinuation { firstStartedWaiter = $0 }
+    }
+
+    func releaseCancellation() {
+        firstContinuation?.resume(throwing: CancellationError())
+        firstContinuation = nil
+    }
 }
 
 @Test func pollRunsServersConcurrentlyAndPreservesSuccessfulServer() async {
@@ -259,45 +325,97 @@ private actor CancellationGateProbe: GPUProbing {
 
 @Test func cancellingActivePollWaitsForProbeAndDoesNotClearANewerGeneration() async {
     let probe = CancellationGateProbe()
-    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
-    let first = Task { await coordinator.poll() }
-    await probe.waitUntilStarted(1)
-
-    await coordinator.cancelActivePoll()
-    _ = await first.value
-    #expect(await probe.cancelledGenerations == [1])
-
-    let second = Task { await coordinator.poll() }
-    await probe.waitUntilStarted(2)
-    let joiner = Task { await coordinator.poll() }
-    for _ in 0..<100 { await Task.yield() }
-    #expect(await probe.sampleCount == 2)
-    await probe.release(2)
-
-    _ = await second.value
-    _ = await joiner.value
-    #expect(await probe.sampleCount == 2)
-}
-
-@Test func waiterReturningFirstClearsTheCompletedPollBeforeStartingAnother() async {
-    let probe = HandoffProbe()
-    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
-    let creatorReturned = OneShotSignal()
-    let waiterStartedSecondPoll = OneShotSignal()
-    let creatorStateAtSecondPoll = BooleanObservation()
-    let creatorCaller = PollCallerHarness()
+    let cleanupGate = CancellationCleanupGate()
+    let coordinator = MonitorCoordinator(
+        servers: [.server10222],
+        probe: probe,
+        beforeCancellationCleanup: { await cleanupGate.pause() }
+    )
+    let cancelReturned = OneShotSignal()
+    let secondPollStarted = OneShotSignal()
+    let cancelStateAtSecondPoll = BooleanObservation()
     let waiterCaller = WaiterCallerHarness()
     let joinerCaller = PollCallerHarness()
     let deadlockGuard = Task {
         try? await ContinuousClock().sleep(for: .milliseconds(500))
         await probe.releaseAllAndExpireWaiters()
+        await secondPollStarted.signal()
+        await cancelReturned.signal()
+    }
+    let waiter = Task {
+        await waiterCaller.callTwice(
+            coordinator,
+            creatorReturned: cancelReturned,
+            creatorStateAtSecondPoll: cancelStateAtSecondPoll,
+            secondPollStarted: secondPollStarted
+        )
+    }
+    #expect(await waiterCaller.waitUntilFirstCallIsSuspended())
+    await probe.waitUntilStarted(1)
+
+    let cancellation = Task {
+        await coordinator.cancelActivePoll()
+        await cancelReturned.signal()
+    }
+    await cleanupGate.waitUntilEntered()
+    await secondPollStarted.wait()
+    #expect(await cancelStateAtSecondPoll.recordedValue == false)
+    await probe.waitUntilStarted(2)
+    #expect(await probe.cancelledGenerations == [1])
+
+    await cleanupGate.release()
+    await cancelReturned.wait()
+    #expect(await probe.sampleCount == 2)
+
+    let joiner = Task { await joinerCaller.call(coordinator) }
+    #expect(await joinerCaller.waitUntilCallIsSuspended())
+    #expect(await probe.sampleCount == 2)
+    await probe.release(2)
+
+    _ = await waiter.value
+    _ = await joiner.value
+    await cancellation.value
+    #expect(await probe.sampleCount == 2)
+    deadlockGuard.cancel()
+    await deadlockGuard.value
+}
+
+@Test func cancelledProbeDoesNotIncrementServerFailureState() async {
+    let probe = CancellationThenFailureProbe()
+    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
+    let cancelledPoll = Task { await coordinator.poll() }
+    await probe.waitUntilFirstStarts()
+
+    await coordinator.cancelActivePoll()
+    _ = await cancelledPoll.value
+    let failedCycle = await coordinator.poll()
+
+    #expect(await probe.sampleCount == 2)
+    #expect(failedCycle.health[ServerConfig.server10222.id] == .degraded(
+        message: TestError.unreachable.localizedDescription,
+        consecutiveFailures: 1
+    ))
+}
+
+@Test func waiterReturningFirstClearsTheCompletedPollBeforeStartingAnother() async {
+    let probe = HandoffProbe()
+    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
+    let creatorCleanupGate = CancellationCleanupGate()
+    let creatorReturned = OneShotSignal()
+    let waiterStartedSecondPoll = OneShotSignal()
+    let creatorStateAtSecondPoll = BooleanObservation()
+    let waiterCaller = WaiterCallerHarness()
+    let joinerCaller = PollCallerHarness()
+    let deadlockGuard = Task {
+        try? await ContinuousClock().sleep(for: .milliseconds(500))
+        await probe.releaseAllAndExpireWaiters()
+        await creatorCleanupGate.release()
     }
     let creator = Task {
-        let cycle = await creatorCaller.call(coordinator)
+        let cycle = await coordinator.poll(beforeCleanup: { await creatorCleanupGate.pause() })
         await creatorReturned.signal()
         return cycle
     }
-    #expect(await creatorCaller.waitUntilCallIsSuspended())
     #expect(await probe.waitUntilSampleStarts(1))
 
     let waiter = Task {
@@ -310,6 +428,7 @@ private actor CancellationGateProbe: GPUProbing {
     }
     #expect(await waiterCaller.waitUntilFirstCallIsSuspended())
     await probe.releaseSample(1)
+    await creatorCleanupGate.waitUntilEntered()
     await waiterStartedSecondPoll.wait()
     #expect(await creatorStateAtSecondPoll.recordedValue == false)
     guard await probe.waitUntilSampleStarts(2) else {
@@ -320,6 +439,7 @@ private actor CancellationGateProbe: GPUProbing {
         await deadlockGuard.value
         return
     }
+    await creatorCleanupGate.release()
     await creatorReturned.wait()
 
     let joiner = Task {
