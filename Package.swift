@@ -10,13 +10,15 @@ let package = Package(
     products: [
         .library(name: "GPUMonitorCore", targets: ["GPUMonitorCore"]),
         .executable(name: "GPUMonitor", targets: ["GPUMonitorApp"]),
+        .executable(name: "GPUMonitorCoreTestsRunner", targets: ["GPUMonitorCoreTestsRunner"]),
     ],
     targets: [
         .target(name: "GPUMonitorCore"),
         .executableTarget(name: "GPUMonitorApp", dependencies: ["GPUMonitorCore"]),
-        .testTarget(
-            name: "GPUMonitorCoreTests",
+        .executableTarget(
+            name: "GPUMonitorCoreTestsRunner",
             dependencies: ["GPUMonitorCore"],
+            path: "Tests/GPUMonitorCoreTests",
             swiftSettings: [.unsafeFlags(["-F", developerFrameworks])],
             linkerSettings: [.unsafeFlags([
                 "-F", developerFrameworks,

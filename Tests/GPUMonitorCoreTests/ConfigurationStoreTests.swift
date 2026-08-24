@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import GPUMonitorCore
+import GPUMonitorCore
 
 @Test func loadOrCreateWritesTheTwoApprovedServersWithoutPasswords() throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import GPUMonitorCore
+import GPUMonitorCore
 
 private let parserSample = """
 0, GPU-a, NVIDIA RTX 4090, 0, 120, 24564, 35

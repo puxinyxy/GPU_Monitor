@@ -1,5 +1,5 @@
 import Foundation
-@testable import GPUMonitorCore
+import GPUMonitorCore
 
 extension ServerConfig {
     static let fixture = ServerConfig(
