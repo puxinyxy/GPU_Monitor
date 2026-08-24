@@ -125,6 +125,9 @@ private actor ControlledAuthorizationNotificationCenter: UserNotificationCenterC
         stateContinuations.removeValue(forKey: index)?.resume(returning: state)
     }
 
+    var stateReadCount: Int { authorizationStateReadCount }
+    var recordedRequests: [MacOSNotificationRequest] { requests }
+
     private func resumeSatisfiedReadCountWaiters() {
         let satisfied = readCountWaiters.filter { $0.count <= authorizationStateReadCount }
         readCountWaiters.removeAll { $0.count <= authorizationStateReadCount }
@@ -437,6 +440,143 @@ private func notificationsNotAllowedError() -> NSError {
     #expect(await newerRead.value == .denied)
     await center.resolveAuthorizationStateRead(0, with: .notDetermined)
     #expect(await olderRequest.value == .denied)
+}
+
+@Test func newerNotDeterminedReadDoesNotDiscardOlderExactErrorEvidence() async {
+    let center = ControlledAuthorizationNotificationCenter(immediateStates: [
+        1: .notDetermined,
+        2: .notDetermined,
+    ])
+    let sink = MacOSNotificationSink(
+        center: center,
+        compatibility: FakeCompatibilityNotificationClient()
+    )
+
+    let exactErrorRequest = Task { await sink.requestAuthorization() }
+    await center.waitForAuthorizationStateReadCount(1)
+    #expect(await sink.authorizationState() == .notDetermined)
+
+    await center.resolveAuthorizationStateRead(0, with: .notDetermined)
+    #expect(await exactErrorRequest.value == .compatibility)
+    #expect(await sink.authorizationState() == .compatibility)
+}
+
+@Test func newerErrorReadDoesNotDiscardOlderExactErrorEvidence() async {
+    let center = ControlledAuthorizationNotificationCenter(immediateStates: [
+        1: .error,
+        2: .error,
+    ])
+    let sink = MacOSNotificationSink(
+        center: center,
+        compatibility: FakeCompatibilityNotificationClient()
+    )
+
+    let exactErrorRequest = Task { await sink.requestAuthorization() }
+    await center.waitForAuthorizationStateReadCount(1)
+    #expect(await sink.authorizationState() == .error)
+
+    await center.resolveAuthorizationStateRead(0, with: .notDetermined)
+    #expect(await exactErrorRequest.value == .compatibility)
+    #expect(await sink.authorizationState() == .compatibility)
+}
+
+@Test func newerDenialRemainsAuthoritativeOverOlderExactErrorEvidence() async {
+    let center = ControlledAuthorizationNotificationCenter(immediateStates: [
+        1: .denied,
+        2: .denied,
+    ])
+    let compatibility = FakeCompatibilityNotificationClient()
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+
+    let exactErrorRequest = Task { await sink.requestAuthorization() }
+    await center.waitForAuthorizationStateReadCount(1)
+    #expect(await sink.authorizationState() == .denied)
+
+    await center.resolveAuthorizationStateRead(0, with: .notDetermined)
+    #expect(await exactErrorRequest.value == .denied)
+    #expect(await sink.authorizationState() == .denied)
+    _ = await sink.send(events: [.serverRecovered(server: notificationTestServer)])
+    #expect(await compatibility.messages.isEmpty)
+}
+
+@Test func compatibilityRouteStaleFromNewerDenialNeverLaunchesCompatibility() async {
+    let center = ControlledAuthorizationNotificationCenter(immediateStates: [0: .notDetermined])
+    let compatibility = FakeCompatibilityNotificationClient()
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+    #expect(await sink.requestAuthorization() == .compatibility)
+
+    let delivery = Task {
+        await sink.send(events: [.serverRecovered(server: notificationTestServer)])
+    }
+    await center.waitForAuthorizationStateReadCount(2)
+    let denialRefresh = Task { await sink.authorizationState() }
+    await center.waitForAuthorizationStateReadCount(3)
+
+    await center.resolveAuthorizationStateRead(2, with: .denied)
+    #expect(await denialRefresh.value == .denied)
+    await center.resolveAuthorizationStateRead(1, with: .notDetermined)
+    _ = await delivery.value
+
+    #expect(await compatibility.messages.isEmpty)
+}
+
+@Test func compatibilityRouteStaleFromNewerInconclusiveReadRetriesCompatibility() async {
+    let center = ControlledAuthorizationNotificationCenter(immediateStates: [
+        0: .notDetermined,
+        3: .notDetermined,
+    ])
+    let compatibility = FakeCompatibilityNotificationClient()
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+    #expect(await sink.requestAuthorization() == .compatibility)
+
+    let delivery = Task {
+        await sink.send(events: [.serverRecovered(server: notificationTestServer)])
+    }
+    await center.waitForAuthorizationStateReadCount(2)
+    let inconclusiveRefresh = Task { await sink.authorizationState() }
+    await center.waitForAuthorizationStateReadCount(3)
+
+    await center.resolveAuthorizationStateRead(2, with: .notDetermined)
+    #expect(await inconclusiveRefresh.value == .compatibility)
+    await center.resolveAuthorizationStateRead(1, with: .notDetermined)
+    let result = await delivery.value
+
+    #expect(result.isSuccess)
+    #expect(await center.recordedRequests.isEmpty)
+    #expect(await compatibility.messages.count == 1)
+    #expect(await center.stateReadCount == 4)
+}
+
+@Test func cancellationDuringStaleCompatibilityRouteRetryAccountsForExactSuffix() async {
+    let center = ControlledAuthorizationNotificationCenter(immediateStates: [0: .notDetermined])
+    let compatibility = FakeCompatibilityNotificationClient()
+    let sink = MacOSNotificationSink(center: center, compatibility: compatibility)
+    #expect(await sink.requestAuthorization() == .compatibility)
+
+    let delivery = Task {
+        await sink.send(events: [
+            .serverRecovered(server: notificationTestServer),
+            .serverOffline(server: notificationTestServer, message: "offline"),
+            .serverRecovered(server: notificationTestServer),
+        ])
+    }
+    await center.waitForAuthorizationStateReadCount(2)
+    let inconclusiveRefresh = Task { await sink.authorizationState() }
+    await center.waitForAuthorizationStateReadCount(3)
+    await center.resolveAuthorizationStateRead(2, with: .notDetermined)
+    #expect(await inconclusiveRefresh.value == .compatibility)
+    await center.resolveAuthorizationStateRead(1, with: .notDetermined)
+
+    await center.waitForAuthorizationStateReadCount(4)
+    delivery.cancel()
+    await center.resolveAuthorizationStateRead(3, with: .notDetermined)
+    let result = await delivery.value
+
+    #expect(await compatibility.messages.isEmpty)
+    #expect(await center.recordedRequests.isEmpty)
+    #expect(result.attemptedCount == 3)
+    #expect(result.deliveredCount == 0)
+    #expect(result.failures.map(\.messageIndex) == [0, 1, 2])
 }
 
 @Test func nativeCompatibilityStateCannotActivateCompatibilityDelivery() async {
