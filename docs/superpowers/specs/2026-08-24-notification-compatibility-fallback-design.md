@@ -34,14 +34,14 @@ AppleScript 程序是源码中的固定参数，不拼接任何事件数据。�
 ```text
 /usr/bin/osascript
   -e 'on run argv'
-  -e 'display notification (item 2 of argv) with title (item 1 of argv) sound name "default"'
+  -e 'display notification (item 2 of argv) with title "GPU Monitor" subtitle (item 1 of argv) sound name "default"'
   -e 'end run'
   --
   <title argv>
   <body argv>
 ```
 
-该调用不经过 Shell。标题或正文中的引号、反斜杠、换行、分号、反引号和命令替换文本都只是一个普通参数，不会成为 AppleScript 源码或 Shell 命令。
+该调用不经过 Shell。固定通知标题为“GPU Monitor”，事件标题作为副标题，事件正文作为正文。事件标题或正文中的引号、反斜杠、换行、分号、反引号和命令替换文本都只是一个普通参数，不会成为 AppleScript 源码或 Shell 命令。
 
 ### 3.3 通道选择器
 
