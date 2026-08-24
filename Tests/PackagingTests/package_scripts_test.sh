@@ -81,8 +81,11 @@ check "installer does not use global pkill matching" file_not_contains "$install
 forced_command='command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; printf '\''\n__GPU_MONITOR_PROCESSES__\n'\''; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits || true"'
 check "provisioner installs the exact forced command" file_contains "$provision_script" "$forced_command"
 check "provisioner allows no command-line arguments" file_contains "$provision_script" '[[ $# -eq 0 ]]'
-check "provisioner gates the fake SSH override" file_contains "$provision_script" 'GPU_MONITOR_PROVISIONING_TESTING'
 check "provisioner defaults to the absolute system SSH" file_contains "$provision_script" 'ssh_bin="/usr/bin/ssh"'
+check "production provisioner has no environment SSH override" file_not_contains "$provision_script" 'GPU_MONITOR_TEST_SSH_BIN'
+check "production provisioner has no testing flag" file_not_contains "$provision_script" 'GPU_MONITOR_PROVISIONING_TESTING'
+check "provisioner ignores user SSH config" file_contains "$provision_script" '-F /dev/null'
+check "provisioner fixes the SSH diagnostic locale" file_contains "$provision_script" 'LC_ALL=C'
 check "provisioner derives trusted key material from the private key" file_contains "$provision_script" 'ssh-keygen -y -f "$identity_file"'
 check "provisioner uses the dedicated SSH directory" file_contains "$provision_script" 'ssh_dir="$HOME/.ssh"'
 check "provisioner uses the dedicated identity" file_contains "$provision_script" 'identity_file="$ssh_dir/gpu_monitor_ed25519"'
@@ -98,6 +101,7 @@ check "authorized_keys installation counts exact matching lines" file_contains "
 check "authorized_keys installation counts all matching blobs" file_contains "$provision_script" 'blob_count'
 check "provisioner tests remote ephemeral forwarding" file_contains "$provision_script" 'ExitOnForwardFailure=yes'
 check "provisioner requests a remote ephemeral forward" file_contains "$provision_script" '-R 127.0.0.1:0:127.0.0.1:1'
+check "provisioner requires the explicit OpenSSH forwarding refusal" file_contains "$provision_script" 'remote port forwarding failed for listen port 0'
 check "provisioner validates full monitor output" file_contains "$provision_script" 'validate_monitor_output'
 check "provisioner reports a learned fingerprint" file_contains "$provision_script" 'ssh-keygen -lf'
 

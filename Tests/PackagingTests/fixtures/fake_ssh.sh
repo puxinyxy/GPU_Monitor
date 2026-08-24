@@ -13,7 +13,7 @@ while (( $# > 0 )); do
         -T|-N)
             shift
             ;;
-        -p|-i|-o)
+        -F|-p|-i|-o)
             (( $# >= 2 )) || exit 92
             shift 2
             ;;
@@ -36,8 +36,13 @@ while (( $# > 0 )); do
 done
 
 if (( has_remote_forward )); then
+    if [[ "${GPU_MONITOR_TEST_FORWARD_UNRELATED_FAILURE:-0}" == "1" ]]; then
+        print -u2 'ssh: connect to host 122.207.108.8 port 10222: Connection refused'
+        exit 255
+    fi
     [[ "${GPU_MONITOR_TEST_FORWARD_ALLOWED:-0}" == "1" ]] && exit 0
-    exit 1
+    print -u2 'Error: remote port forwarding failed for listen port 0'
+    exit 255
 fi
 
 if [[ "$remote_command" == *'/bin/sh -s'* ]]; then

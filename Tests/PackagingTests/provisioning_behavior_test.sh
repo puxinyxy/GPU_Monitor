@@ -2,13 +2,28 @@
 set -euo pipefail
 
 project_dir=${0:A:h:h:h}
-provisioner="$project_dir/scripts/provision_ssh.sh"
+production_provisioner="$project_dir/scripts/provision_ssh.sh"
 fake_ssh="$project_dir/Tests/PackagingTests/fixtures/fake_ssh.sh"
 test_root=$(/usr/bin/mktemp -d "${TMPDIR%/}/gpu-monitor-provision-tests.XXXXXX")
+provisioner="$test_root/instrumented-provision_ssh.sh"
 failures=0
 valid_output=$'0, GPU-1234, Test GPU, 0, 12, 24576, 35\n\n__GPU_MONITOR_PROCESSES__\n'
 forced_command='nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; printf '\''\n__GPU_MONITOR_PROCESSES__\n'\''; nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits || true'
 restrictions='no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding'
+
+assignment_count=$(/usr/bin/grep -Fxc -- 'ssh_bin="/usr/bin/ssh"' "$production_provisioner" || true)
+if [[ "$assignment_count" != "1" ]]; then
+    print -u2 "FAIL: expected exactly one fixed production ssh_bin assignment, found $assignment_count"
+    exit 1
+fi
+/usr/bin/sed "s|^ssh_bin=\"/usr/bin/ssh\"$|ssh_bin=\"$fake_ssh\"|" "$production_provisioner" > "$provisioner"
+/bin/chmod 755 "$provisioner"
+instrumented_count=$(/usr/bin/grep -Fxc -- "ssh_bin=\"$fake_ssh\"" "$provisioner" || true)
+remaining_production_count=$(/usr/bin/grep -Fxc -- 'ssh_bin="/usr/bin/ssh"' "$provisioner" || true)
+if [[ "$instrumented_count" != "1" || "$remaining_production_count" != "0" ]]; then
+    print -u2 "FAIL: instrumented copy did not replace exactly one fixed SSH assignment"
+    exit 1
+fi
 
 cleanup() {
     [[ "$test_root" == "${TMPDIR%/}/gpu-monitor-provision-tests."* ]] || return 1
@@ -65,12 +80,12 @@ run_provisioner() {
     /usr/bin/env \
         HOME="$case_home" \
         GPU_MONITOR_PROVISIONING_TESTING=1 \
-        GPU_MONITOR_TEST_SSH_BIN="$fake_ssh" \
         GPU_MONITOR_TEST_REMOTE_HOME="$remote_home" \
         GPU_MONITOR_TEST_SSH_LOG="$ssh_log" \
         GPU_MONITOR_TEST_MONITOR_OUTPUT="${monitor_output:-$valid_output}" \
         GPU_MONITOR_TEST_FORCED_OUTPUT="${forced_output:-${monitor_output:-$valid_output}}" \
         GPU_MONITOR_TEST_FORWARD_ALLOWED="${forward_allowed:-0}" \
+        GPU_MONITOR_TEST_FORWARD_UNRELATED_FAILURE="${forward_unrelated_failure:-0}" \
         "$provisioner" >"$stdout_log" 2>"$stderr_log"
 }
 
@@ -174,6 +189,24 @@ else
 fi
 unset forced_output
 
+new_case malformed_sample_process
+monitor_output=$'0, GPU-1234, Test GPU, 0, 12, 24576, 35\n__GPU_MONITOR_PROCESSES__\nGPU-1234, not-a-pid, python, 100'
+if run_provisioner; then
+    record_failure "malformed sample process output is rejected"
+else
+    record_pass "malformed sample process output is rejected"
+fi
+unset monitor_output
+
+new_case malformed_forced_process
+forced_output=$'0, GPU-1234, Test GPU, 0, 12, 24576, 35\n__GPU_MONITOR_PROCESSES__\nGPU-1234, 123, , 100'
+if run_provisioner; then
+    record_failure "malformed forced-command process output is rejected"
+else
+    record_pass "malformed forced-command process output is rejected"
+fi
+unset forced_output
+
 new_case nonnumeric_gpu
 monitor_output=$'0, GPU-1234, Test GPU, not-a-number, 12, 24576, 35\n__GPU_MONITOR_PROCESSES__\n'
 if run_provisioner; then
@@ -209,6 +242,15 @@ else
     record_pass "successful remote forwarding fails provisioning"
 fi
 unset forward_allowed
+
+new_case forwarding_unrelated_failure
+forward_unrelated_failure=1
+if run_provisioner; then
+    record_failure "unrelated SSH forwarding failure fails closed"
+else
+    record_pass "unrelated SSH forwarding failure fails closed"
+fi
+unset forward_unrelated_failure
 
 new_case valid_idempotent
 if run_provisioner && run_provisioner; then

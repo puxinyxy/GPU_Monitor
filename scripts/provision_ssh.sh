@@ -24,6 +24,12 @@ fail() {
 is_parser_integer() {
     local digits=$1
     local maximum="9223372036854775807"
+    if [[ "$digits[1]" == "-" ]]; then
+        digits="${digits[2,-1]}"
+        maximum="9223372036854775808"
+    elif [[ "$digits[1]" == "+" ]]; then
+        digits="${digits[2,-1]}"
+    fi
     [[ "$digits" == <-> ]] || return 1
     while (( ${#digits} > 1 )) && [[ "$digits[1]" == "0" ]]; do
         digits="${digits[2,-1]}"
@@ -39,7 +45,8 @@ validate_monitor_output() {
     local gpu_count=0
     local before_marker=1
     local line trimmed field
-    local -a fields
+    local process_line
+    local -a fields process_lines
 
     for line in "${(@f)output}"; do
         trimmed="${line#"${line%%[![:space:]]*}"}"
@@ -50,33 +57,44 @@ validate_monitor_output() {
             before_marker=0
             continue
         fi
-        (( before_marker )) || continue
+        if (( before_marker )); then
+            fields=("${(@s:,:)trimmed}")
+            (( ${#fields} == 7 )) || return 1
+            for field in {1..7}; do
+                fields[$field]="${fields[$field]#"${fields[$field]%%[![:space:]]*}"}"
+                fields[$field]="${fields[$field]%"${fields[$field]##*[![:space:]]}"}"
+            done
+            [[ -n "$fields[2]" && -n "$fields[3]" ]] || return 1
+            is_parser_integer "$fields[1]" || return 1
+            for field in 4 5 6 7; do
+                is_parser_integer "$fields[$field]" || return 1
+            done
+            gpu_count=$((gpu_count + 1))
+        else
+            process_lines+=("$trimmed")
+        fi
+    done
 
-        fields=("${(@s:,:)trimmed}")
-        (( ${#fields} == 7 )) || return 1
-        for field in {1..7}; do
+    (( marker_count == 1 && gpu_count > 0 )) || return 1
+    (( ${#process_lines} == 0 )) && return 0
+    if (( ${#process_lines} == 1 )) && [[ "$process_lines[1]" == "No running processes found" ]]; then
+        return 0
+    fi
+
+    for process_line in "${process_lines[@]}"; do
+        fields=("${(@s:,:)process_line}")
+        (( ${#fields} == 4 )) || return 1
+        for field in {1..4}; do
             fields[$field]="${fields[$field]#"${fields[$field]%%[![:space:]]*}"}"
             fields[$field]="${fields[$field]%"${fields[$field]##*[![:space:]]}"}"
         done
-        [[ -n "$fields[2]" && -n "$fields[3]" ]] || return 1
-        is_parser_integer "$fields[1]" || return 1
-        for field in 4 5 6 7; do
-            is_parser_integer "$fields[$field]" || return 1
-        done
-        gpu_count=$((gpu_count + 1))
+        [[ -n "$fields[1]" && -n "$fields[3]" ]] || return 1
+        is_parser_integer "$fields[2]" || return 1
+        is_parser_integer "$fields[4]" || return 1
     done
-
-    (( marker_count == 1 && gpu_count > 0 ))
 }
 
 ssh_bin="/usr/bin/ssh"
-if [[ "${GPU_MONITOR_PROVISIONING_TESTING:-0}" == "1" ]]; then
-    [[ -n "${GPU_MONITOR_TEST_SSH_BIN:-}" && "${GPU_MONITOR_TEST_SSH_BIN}" == /* && -x "${GPU_MONITOR_TEST_SSH_BIN}" ]] ||
-        fail "testing requires an absolute executable GPU_MONITOR_TEST_SSH_BIN"
-    ssh_bin="${GPU_MONITOR_TEST_SSH_BIN}"
-elif [[ -n "${GPU_MONITOR_TEST_SSH_BIN:-}" ]]; then
-    fail "GPU_MONITOR_TEST_SSH_BIN requires GPU_MONITOR_PROVISIONING_TESTING=1"
-fi
 
 umask 077
 /bin/mkdir -p "$ssh_dir" "$app_support_dir"
@@ -186,8 +204,9 @@ for port in $ports; do
         print -r -- "$key_blob"
         print -r -- "$authorized_line"
         print -r -- "$remote_installer"
-    } | "$ssh_bin" \
+    } | LC_ALL=C "$ssh_bin" \
         -T \
+        -F /dev/null \
         -p "$port" \
         -o BatchMode=no \
         -o PreferredAuthentications=password \
@@ -208,6 +227,7 @@ for port in $ports; do
 
     ssh_options=(
         -T
+        -F /dev/null
         -i "$identity_file"
         -p "$port"
         -o BatchMode=yes
@@ -216,12 +236,12 @@ for port in $ports; do
         -o UserKnownHostsFile="$known_hosts"
     )
 
-    sample_output=$("$ssh_bin" "${ssh_options[@]}" "$destination") ||
+    sample_output=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" "$destination") ||
         fail "restricted-key sample failed for port $port"
     validate_monitor_output "$sample_output" ||
         fail "restricted-key sample was not valid monitor output on port $port"
 
-    forced_output=$("$ssh_bin" "${ssh_options[@]}" "$destination" 'echo SHOULD_NOT_RUN') ||
+    forced_output=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" "$destination" 'echo SHOULD_NOT_RUN') ||
         fail "forced-command verification failed for port $port"
     if [[ "$forced_output" == *SHOULD_NOT_RUN* ]]; then
         fail "the requested shell command ran on port $port"
@@ -229,11 +249,19 @@ for port in $ports; do
     validate_monitor_output "$forced_output" ||
         fail "the forced command did not return valid monitor output on port $port"
 
-    if "$ssh_bin" "${ssh_options[@]}" \
+    forwarding_stderr=""
+    if forwarding_stderr=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" \
         -o ExitOnForwardFailure=yes \
         -R 127.0.0.1:0:127.0.0.1:1 \
-        "$destination" true >/dev/null 2>&1; then
+        "$destination" true 2>&1 >/dev/null); then
         fail "the restricted key unexpectedly allowed remote port forwarding on port $port"
+    else
+        forwarding_status=$?
+    fi
+    if (( forwarding_status != 255 )) ||
+        ! print -r -- "$forwarding_stderr" |
+            /usr/bin/grep -Eq '^(Error: |Warning: )?remote port forwarding failed for listen port 0$'; then
+        fail "could not prove that the server explicitly rejected remote port forwarding on port $port"
     fi
     print "Restricted key and forced command verified for port $port."
 done
