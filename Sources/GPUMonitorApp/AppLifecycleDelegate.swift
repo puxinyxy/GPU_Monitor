@@ -12,6 +12,7 @@ extension AppModel: AppLifecycleControlling {}
 public final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     private var model: (any AppLifecycleControlling)?
     private var terminationTask: Task<Void, Never>?
+    private var pendingTerminationReplies: [@MainActor (Bool) -> Void] = []
     private var terminationFinished = false
 
     public override init() {}
@@ -32,13 +33,18 @@ public final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     ) -> NSApplication.TerminateReply {
         guard model != nil else { return .terminateNow }
         guard !terminationFinished else { return .terminateNow }
+        pendingTerminationReplies.append(reply)
         guard terminationTask == nil else { return .terminateLater }
 
         terminationTask = Task { [self] in
             await model?.stop()
+            let replies = pendingTerminationReplies
+            pendingTerminationReplies.removeAll()
             terminationFinished = true
             terminationTask = nil
-            reply(true)
+            for pendingReply in replies {
+                pendingReply(true)
+            }
         }
         return .terminateLater
     }

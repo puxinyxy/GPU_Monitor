@@ -65,6 +65,8 @@ readme="$project_dir/README.md"
 app_entry="$project_dir/Sources/GPUMonitorApp/GPUMonitorApp.swift"
 menu_view="$project_dir/Sources/GPUMonitorApp/MenuContentView.swift"
 lifecycle_delegate="$project_dir/Sources/GPUMonitorApp/AppLifecycleDelegate.swift"
+notification_sink="$project_dir/Sources/GPUMonitorNotifications/MacOSNotificationSink.swift"
+install_behavior_test="$project_dir/Tests/PackagingTests/install_app_behavior_test.sh"
 
 check "package script uses exact app path guard" file_contains "$package_script" '[[ "$app_dir" == "$project_dir/dist/GPU Monitor.app" ]] || exit 2'
 check "package script removes only its exact bundle" file_contains "$package_script" 'rm -rf "$app_dir"'
@@ -92,10 +94,15 @@ check "installer never invokes the kill utility" file_not_contains "$install_scr
 check "app installs the AppKit lifecycle delegate before startup" file_contains "$app_entry" '@NSApplicationDelegateAdaptor(AppLifecycleDelegate.self)'
 check "app configures the lifecycle delegate with the live model" file_contains "$app_entry" 'lifecycleDelegate.configure(model: liveModel)'
 check "lifecycle delegate defers termination" file_contains "$lifecycle_delegate" 'return .terminateLater'
-check "lifecycle delegate replies only after model stop" file_text_precedes "$lifecycle_delegate" 'await model?.stop()' 'reply(true)'
+check "lifecycle delegate replies only after model stop" file_text_precedes "$lifecycle_delegate" 'await model?.stop()' 'pendingReply(true)'
 check "application activation refreshes authorization" file_contains "$lifecycle_delegate" 'model.refreshNotificationAuthorization()'
+check "opening the menu refreshes authorization with a cancellable view task" file_contains "$menu_view" '.task { await model.refreshNotificationAuthorization() }'
 check "menu quit delegates shutdown to NSApplication" file_contains "$menu_view" 'NSApplication.shared.terminate(nil)'
 check "menu quit does not duplicate model shutdown" file_not_contains "$menu_view" 'await model.stop()'
+check "foreground callback delegates through the tested presentation helper" file_contains "$notification_sink" 'completeForegroundPresentation(using: completionHandler)'
+check "offline installer behavior harness exists" test -f "$install_behavior_test"
+check "offline installer harness has a temp-root safety guard" file_contains "$install_behavior_test" 'gpu-monitor-install-test.'
+check "offline installer harness traps cleanup" file_contains "$install_behavior_test" 'trap cleanup EXIT INT TERM'
 
 forced_command='command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\''\n__GPU_MONITOR_PROCESSES__\n'\'' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits"'
 check "provisioner installs the exact forced command" file_contains "$provision_script" "$forced_command"
@@ -130,6 +137,7 @@ check "README has exact provision command" file_contains "$readme" './scripts/pr
 check "README has exact test command" file_contains "$readme" 'swift run GPUMonitorCoreTestsRunner'
 check "README has app test command" file_contains "$readme" 'swift run GPUMonitorAppTestsRunner'
 check "README has packaging policy test command" file_contains "$readme" 'zsh Tests/PackagingTests/package_scripts_test.sh'
+check "README has installer behavior test command" file_contains "$readme" 'zsh Tests/PackagingTests/install_app_behavior_test.sh'
 check "README has provisioning behavior test command" file_contains "$readme" 'zsh Tests/PackagingTests/provisioning_behavior_test.sh'
 check "README has strict concurrency verification" file_contains "$readme" '-strict-concurrency=complete -Xswiftc -warnings-as-errors'
 check "README has exact package command" file_contains "$readme" './scripts/package_app.sh'

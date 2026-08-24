@@ -24,6 +24,7 @@ swift run GPUMonitorCoreTestsRunner
 swift run GPUMonitorCoreTestsRunner
 swift run GPUMonitorAppTestsRunner
 zsh Tests/PackagingTests/provisioning_behavior_test.sh
+zsh Tests/PackagingTests/install_app_behavior_test.sh
 zsh Tests/PackagingTests/package_scripts_test.sh
 swift build -Xswiftc -swift-version -Xswiftc 6 -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 ```

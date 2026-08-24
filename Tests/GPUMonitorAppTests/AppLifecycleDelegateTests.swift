@@ -42,7 +42,7 @@ func terminationWaitsForStopAndCoalescesRepeatedRequests() async {
     model.releaseStop()
     for _ in 0..<100 where replies.isEmpty { await Task.yield() }
 
-    #expect(replies == [true])
+    #expect(replies == [true, true])
     #expect(delegate.requestTermination { replies.append($0) } == .terminateNow)
     #expect(model.stopCalls == 1)
 }

@@ -723,11 +723,11 @@ struct GPUMonitorApp: App {
 }
 ```
 
-`MenuContentView` renders servers in configuration order. Each GPU row displays occupancy, utilization, `used / total` memory in MiB or GiB, temperature, and the first process name/PID when busy. It renders `unknown`, short failure, and offline states distinctly. The footer contains the last-updated time, a disabled-while-running “立即刷新” button, and an “退出” button calling `NSApplication.shared.terminate(nil)`.
+`MenuContentView` renders servers in configuration order. Each GPU row displays occupancy, utilization, `used / total` memory in MiB or GiB, temperature, and the first process name/PID when busy. It renders `unknown`, short failure, and offline states distinctly. The root view uses a cancellable `.task` to call the coalesced notification-authorization refresh whenever the menu panel is presented. The footer contains the last-updated time, a disabled-while-running “立即刷新” button, and an “退出” button calling `NSApplication.shared.terminate(nil)`.
 
 `AppModel.live()` creates the configuration store, probe, coordinator, and notification sink but does not create a second timer. `GPUMonitorApp.init()` installs an `@NSApplicationDelegateAdaptor`, configures it with the live model, then starts the model exactly once, independently of whether the menu is opened. Manual and periodic refreshes re-read notification authorization; application activation triggers the same coalesced read. Cancellation or a non-cooperative authorization provider cannot delay `stop()`, and late results after a lifecycle-generation change are discarded.
 
-`AppLifecycleDelegate.applicationShouldTerminate` returns `.terminateLater`, awaits one shared `model.stop()`, then calls `reply(toApplicationShouldTerminate: true)`. Repeated termination requests do not duplicate shutdown. The menu's “退出” action only calls `NSApplication.shared.terminate(nil)` so all normal quit paths share the AppKit bridge.
+`AppLifecycleDelegate.applicationShouldTerminate` returns `.terminateLater`, accumulates every pending AppKit reply, awaits one shared `model.stop()`, then replies `true` to every waiter. Repeated termination requests do not duplicate shutdown or receive an early reply. The menu's “退出” action only calls `NSApplication.shared.terminate(nil)` so all normal quit paths share the AppKit bridge.
 
 - [ ] **Step 3: Build and run a local development smoke test**
 
@@ -787,6 +787,8 @@ codesign --verify --deep --strict --verbose=2 "$app_dir"
 ```
 
 `scripts/install_app.sh` first detects only the current user's process whose executable path exactly equals `/Applications/GPU Monitor.app/Contents/MacOS/GPUMonitor`. When present it requests graceful quit through `/usr/bin/osascript` using the fixed bundle identifier, waits boundedly for that exact process to disappear, and fails closed if the Apple event fails or the app remains alive. It never sends SIGTERM/SIGKILL. It then replaces only `/Applications/GPU Monitor.app` with the freshly packaged app using `ditto`, verifies the installed signature, and opens it. It must never touch other applications.
+
+`Tests/PackagingTests/install_app_behavior_test.sh` copies the production installer into a guarded temporary sandbox and replaces every process, Apple Event, sleep, remove, copy, signing, and launch command with a fake. It verifies no-match, different-UID/path, Apple-event failure, quit timeout, and graceful-disappearance cases, including the required quit-before-overwrite order, without touching real applications or processes.
 
 - [ ] **Step 3: Add an interactive password-free-source SSH provisioning script**
 

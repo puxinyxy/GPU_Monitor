@@ -42,7 +42,7 @@ private actor FakeNotificationCenter: UserNotificationCenterClient {
     var requestCount: Int { authorizationRequestCount }
 }
 
-@Test func foregroundDelegateIsInstalledAndStronglyRetainedWithVisiblePresentationOptions() {
+@Test func foregroundDelegateIsInstalledAndStronglyRetained() {
     weak var installedDelegate: ForegroundNotificationDelegate?
     var installation: ForegroundNotificationDelegateInstallation? =
         ForegroundNotificationDelegateInstallation { delegate in
@@ -50,11 +50,30 @@ private actor FakeNotificationCenter: UserNotificationCenterClient {
         }
 
     #expect(installedDelegate != nil)
-    #expect(installedDelegate?.presentationOptions == [.banner, .list, .sound])
+    var protocolDelegate: (any UNUserNotificationCenterDelegate)? = installedDelegate
+    #expect(protocolDelegate != nil)
 
+    protocolDelegate = nil
     installation = nil
     #expect(installation == nil)
     #expect(installedDelegate == nil)
+}
+
+@Test func foregroundDelegateImplementsCallbackAndCompletesVisiblePresentationOptions() {
+    let delegate = ForegroundNotificationDelegate()
+    let selector = #selector(
+        UNUserNotificationCenterDelegate.userNotificationCenter(
+            _:willPresent:withCompletionHandler:
+        )
+    )
+    #expect(delegate.responds(to: selector))
+    var completedOptions: UNNotificationPresentationOptions?
+
+    delegate.completeForegroundPresentation { options in
+        completedOptions = options
+    }
+
+    #expect(completedOptions == [.banner, .list, .sound])
 }
 
 @Test func macOSSinkContinuesAfterFailuresAndReturnsSanitizedResult() async {

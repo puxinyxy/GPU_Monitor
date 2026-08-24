@@ -83,6 +83,7 @@ public struct MenuContentView: View {
         }
         .padding(14)
         .frame(width: 540)
+        .task { await model.refreshNotificationAuthorization() }
     }
 }
 

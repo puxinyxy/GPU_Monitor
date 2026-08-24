@@ -16,14 +16,18 @@ protocol UserNotificationCenterClient: Sendable {
 }
 
 final class ForegroundNotificationDelegate: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
-    let presentationOptions: UNNotificationPresentationOptions = [.banner, .list, .sound]
-
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler(presentationOptions)
+        completeForegroundPresentation(using: completionHandler)
+    }
+
+    func completeForegroundPresentation(
+        using completionHandler: (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
     }
 }
 
