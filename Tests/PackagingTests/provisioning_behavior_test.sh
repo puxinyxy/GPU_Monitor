@@ -137,6 +137,66 @@ run_provisioner() {
         "$provisioner" >"$stdout_log" 2>"$stderr_log"
 }
 
+logged_ssh_calls_use_quoted_known_hosts() {
+    local expected="UserKnownHostsFile=\"$case_home/Library/Application Support/GPUMonitor/known_hosts\""
+    /usr/bin/awk -v expected="$expected" '
+        function finish_call() {
+            if (!in_call) {
+                invalid = 1
+                return
+            }
+            calls++
+            expected_port = calls <= 4 ? "10122" : "10165"
+            if (known_hosts_count != 1 || port != expected_port) {
+                invalid = 1
+            }
+            if (batch_mode == "no") {
+                initial_calls++
+            } else if (batch_mode == "yes") {
+                batch_calls++
+            } else {
+                invalid = 1
+            }
+            in_call = 0
+        }
+
+        $0 == "__GPU_MONITOR_SSH_CALL__" {
+            if (in_call) invalid = 1
+            in_call = 1
+            known_hosts_count = 0
+            batch_mode = ""
+            port = ""
+            expecting_port = 0
+            next
+        }
+        $0 == "__GPU_MONITOR_SSH_END__" {
+            finish_call()
+            next
+        }
+        in_call && index($0, "ARG:") == 1 {
+            argument = substr($0, 5)
+            if (expecting_port) {
+                port = argument
+                expecting_port = 0
+            } else if (argument == "-p") {
+                expecting_port = 1
+            }
+            if (argument == expected) known_hosts_count++
+            if (argument == "BatchMode=no") batch_mode = "no"
+            if (argument == "BatchMode=yes") batch_mode = "yes"
+            next
+        }
+        { invalid = 1 }
+
+        END {
+            if (in_call || calls != 8 || initial_calls != 2 || batch_calls != 6) {
+                invalid = 1
+            }
+            exit invalid ? 1 : 0
+        }
+    ' "$ssh_log"
+}
+
 expect_failure_without_ssh() {
     local description=$1
     if run_provisioner; then
@@ -147,6 +207,17 @@ expect_failure_without_ssh() {
         record_pass "$description"
     fi
 }
+
+new_case quoted_known_hosts_config_value
+if run_provisioner; then
+    if logged_ssh_calls_use_quoted_known_hosts; then
+        record_pass "all initial and batch SSH calls quote the whitespace known-hosts config value"
+    else
+        record_failure "all initial and batch SSH calls quote the whitespace known-hosts config value"
+    fi
+else
+    record_failure "all initial and batch SSH calls quote the whitespace known-hosts config value (provisioner failed: $(<"$stderr_log"))"
+fi
 
 new_case mismatched_pub
 prepare_identity

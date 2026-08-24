@@ -94,6 +94,13 @@ validate_monitor_output() {
     done
 }
 
+quote_openssh_config_value() {
+    local value=$1
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    print -r -- "\"$value\""
+}
+
 ssh_bin="/usr/bin/ssh"
 
 umask 077
@@ -145,6 +152,7 @@ if [[ ! -e "$known_hosts" ]]; then
 fi
 [[ -f "$known_hosts" ]] || fail "known-hosts path is not a regular file: $known_hosts"
 /bin/chmod 600 "$known_hosts"
+known_hosts_option="UserKnownHostsFile=$(quote_openssh_config_value "$known_hosts")"
 
 authorized_options=$(
     /bin/cat <<'OPTIONS'
@@ -212,7 +220,7 @@ for port in $ports; do
         -o PreferredAuthentications=password \
         -o PubkeyAuthentication=no \
         -o StrictHostKeyChecking=accept-new \
-        -o UserKnownHostsFile="$known_hosts" \
+        -o "$known_hosts_option" \
         "$destination" \
         'IFS= read -r key_blob; IFS= read -r authorized_line; export key_blob authorized_line; /bin/sh -s'
 
@@ -233,7 +241,7 @@ for port in $ports; do
         -o BatchMode=yes
         -o IdentitiesOnly=yes
         -o StrictHostKeyChecking=yes
-        -o UserKnownHostsFile="$known_hosts"
+        -o "$known_hosts_option"
     )
 
     sample_output=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" "$destination") ||

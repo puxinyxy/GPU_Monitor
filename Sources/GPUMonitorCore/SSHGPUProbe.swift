@@ -46,6 +46,7 @@ public struct SSHGPUProbe: GPUProbing, Sendable {
 
     public func sample(server: ServerConfig) async throws -> ServerSnapshot {
         let expandedIdentityPath = (server.identityFile as NSString).expandingTildeInPath
+        let knownHostsOption = "UserKnownHostsFile=\(Self.quoteOpenSSHConfigValue(knownHostsURL.path))"
         let arguments = [
             "-T",
             "-F", "/dev/null",
@@ -61,7 +62,7 @@ public struct SSHGPUProbe: GPUProbing, Sendable {
             "-o", "ServerAliveInterval=5",
             "-o", "ServerAliveCountMax=1",
             "-o", "StrictHostKeyChecking=yes",
-            "-o", "UserKnownHostsFile=\(knownHostsURL.path)",
+            "-o", knownHostsOption,
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "ClearAllForwardings=yes",
             "-o", "LogLevel=ERROR",
@@ -140,5 +141,12 @@ public struct SSHGPUProbe: GPUProbing, Sendable {
 
     private static func containsAny(_ diagnostic: String, _ fragments: [String]) -> Bool {
         fragments.contains(where: diagnostic.contains)
+    }
+
+    private static func quoteOpenSSHConfigValue(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 }

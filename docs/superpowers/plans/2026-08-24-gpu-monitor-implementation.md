@@ -427,13 +427,18 @@ git commit -m "feat: track confirmed GPU and server state changes"
 ```swift
 @Test func probeUsesPinnedKnownHostsBatchModeAndNoRemoteCommand() async throws {
     let runner = RecordingRunner(stdout: validNVIDIAOutput)
-    let probe = SSHGPUProbe(runner: runner, knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts"))
+    let probe = SSHGPUProbe(
+        runner: runner,
+        knownHostsURL: URL(fileURLWithPath: "/tmp/Application Support/known_hosts")
+    )
     _ = try await probe.sample(server: .fixture)
     let call = await runner.onlyCall
     #expect(call.executable == "/usr/bin/ssh")
     #expect(call.arguments.contains("BatchMode=yes"))
     #expect(call.arguments.contains("StrictHostKeyChecking=yes"))
-    #expect(call.arguments.contains("UserKnownHostsFile=/tmp/known_hosts"))
+    #expect(call.arguments.contains(
+        "UserKnownHostsFile=\"/tmp/Application Support/known_hosts\""
+    ))
     #expect(call.arguments.last == "yanxiaoyang@122.207.108.8")
 }
 ```
@@ -478,7 +483,7 @@ Construct exactly these arguments before the `user@host` destination:
     "-o", "ServerAliveInterval=5",
     "-o", "ServerAliveCountMax=1",
     "-o", "StrictHostKeyChecking=yes",
-    "-o", "UserKnownHostsFile=\(knownHostsURL.path)",
+    "-o", "UserKnownHostsFile=\"<escaped knownHostsURL.path>\"",
     "-o", "GlobalKnownHostsFile=/dev/null",
     "-o", "ClearAllForwardings=yes",
     "-o", "LogLevel=ERROR",
@@ -487,6 +492,8 @@ Construct exactly these arguments before the `user@host` destination:
 ```
 
 Pass `.seconds(8)` to the runner, parse stdout with `NVIDIAOutputParser`, and map failures to the sanitized `ProbeFailure` cases connectivity, host-key/security, authentication, remote-command, invalid-response, and local-launch. Fixed user-readable messages must not include stderr, host, user, identity path, or credentials. OpenSSH `Network is unreachable` and `Connection refused` diagnostics are connectivity.
+
+The `UserKnownHostsFile` value must use OpenSSH config-level quoting, not only argv/shell quoting: escape backslashes and double quotes inside the path, wrap the whole path in literal double quotes, and pass the resulting `UserKnownHostsFile="..."` as one argument after `-o`. Tests cover the `Application Support` whitespace path plus embedded backslash and double-quote escaping.
 
 - [ ] **Step 6: Run focused and full tests**
 
@@ -793,6 +800,8 @@ codesign --verify --deep --strict --verbose=2 "$app_dir"
 - [ ] **Step 3: Add an interactive password-free-source SSH provisioning script**
 
 The script creates `~/.ssh/gpu_monitor_ed25519` if absent, creates the dedicated known-hosts file, then loops over ports `10122` and `10165`. Each initial `ssh` command uses `StrictHostKeyChecking=accept-new`, displays the learned fingerprint, and prompts interactively for the server password.
+
+Every initial-password, batch sample, forced-command, and forwarding-verification SSH invocation must pass the dedicated known-hosts path as one `-o` argument whose value is quoted at the OpenSSH configuration syntax level (`UserKnownHostsFile="..."`). The offline fake-SSH harness records argv boundaries and rejects missing inner quotes, including the `Application Support` whitespace path.
 
 Build an authorized-key line with the public key and these restrictions:
 

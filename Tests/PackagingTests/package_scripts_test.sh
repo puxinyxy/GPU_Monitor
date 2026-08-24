@@ -119,6 +119,10 @@ check "provisioner uses the dedicated SSH directory" file_contains "$provision_s
 check "provisioner uses the dedicated identity" file_contains "$provision_script" 'identity_file="$ssh_dir/gpu_monitor_ed25519"'
 check "provisioner uses the dedicated application-support directory" file_contains "$provision_script" 'app_support_dir="$HOME/Library/Application Support/GPUMonitor"'
 check "provisioner uses the dedicated known-hosts file" file_contains "$provision_script" 'known_hosts="$app_support_dir/known_hosts"'
+check "provisioner quotes OpenSSH config values" file_contains "$provision_script" 'quote_openssh_config_value()'
+check "provisioner builds one quoted known-hosts option" file_contains "$provision_script" 'known_hosts_option="UserKnownHostsFile=$(quote_openssh_config_value "$known_hosts")"'
+check "provisioner passes the known-hosts option as one argument" file_contains "$provision_script" '-o "$known_hosts_option"'
+check "provisioner never passes an unquoted config-level known-hosts value" file_not_contains "$provision_script" '-o UserKnownHostsFile="$known_hosts"'
 check "provisioner covers port 10122" file_contains "$provision_script" '10122'
 check "provisioner covers port 10165" file_contains "$provision_script" '10165'
 check "provisioner rejects the stale first-server port" file_not_contains "$provision_script" "$stale_first_port"
@@ -150,6 +154,7 @@ check "README documents no login-item setup" file_contains "$readme" '不配置�
 check "README documents graceful installer shutdown" file_contains "$readme" 'Apple Event 请求已安装实例正常退出'
 check "README documents privacy" file_contains "$readme" '隐私'
 check "README documents server editing" file_contains "$readme" 'servers.json'
+check "README documents config-level known-hosts quoting" file_contains "$readme" 'OpenSSH 配置值层的双引号'
 check "README keeps remote-key removal explicit" file_contains "$readme" 'authorized_keys'
 check "README records the public blob before deleting its file" file_text_precedes "$readme" 'awk '\''{print $2}'\'' "$HOME/.ssh/gpu_monitor_ed25519.pub"' 'rm -f "$HOME/.ssh/gpu_monitor_ed25519"'
 check "README does not claim unsupported polling fields" file_not_contains "$readme" '轮询参数'

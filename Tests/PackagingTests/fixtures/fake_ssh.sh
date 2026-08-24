@@ -4,7 +4,13 @@ set -euo pipefail
 [[ "${GPU_MONITOR_PROVISIONING_TESTING:-0}" == "1" ]] || exit 90
 [[ -n "${GPU_MONITOR_TEST_REMOTE_HOME:-}" ]] || exit 91
 
-print -r -- "$*" >> "${GPU_MONITOR_TEST_SSH_LOG:?}"
+{
+    print -r -- '__GPU_MONITOR_SSH_CALL__'
+    for argument in "$@"; do
+        print -r -- "ARG:$argument"
+    done
+    print -r -- '__GPU_MONITOR_SSH_END__'
+} >> "${GPU_MONITOR_TEST_SSH_LOG:?}"
 
 remote_command=""
 has_remote_forward=0

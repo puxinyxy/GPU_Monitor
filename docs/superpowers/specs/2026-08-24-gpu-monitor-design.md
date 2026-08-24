@@ -50,7 +50,7 @@ GPU 0  空闲       0%     80 MiB / 24 GiB   33°C
 - `-F /dev/null`，完全忽略用户和系统 SSH 配置
 - 独立身份密钥，并设置 `IdentitiesOnly=yes`
 - 仅允许公钥认证：`PreferredAuthentications=publickey`、`PasswordAuthentication=no`、`KbdInteractiveAuthentication=no`
-- 独立并固定的 `known_hosts`；`GlobalKnownHostsFile=/dev/null`
+- 独立并固定的 `known_hosts`；`GlobalKnownHostsFile=/dev/null`。`UserKnownHostsFile` 的路径先转义反斜杠和双引号，再包在 OpenSSH 配置值层的双引号中，以单个 `-o` 参数传递，避免 `Application Support` 被配置解析器按空白拆分
 - `ClearAllForwardings=yes`，禁止本地、远端、动态和配置继承的转发
 - 8 秒连接超时
 - 禁止交互式密码回退
@@ -123,6 +123,8 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 ~/.ssh/gpu_monitor_ed25519.pub
 ~/Library/Application Support/GPUMonitor/known_hosts
 ```
+
+虽然进程调用边界已经把 `-o` 的值作为单个 argv 元素传入，OpenSSH 仍会按 `ssh_config` 语法再次解析它。因此上面的含空格路径必须编码成 `UserKnownHostsFile="..."`，不能只依赖 shell 或 Swift 的参数边界。
 
 私钥权限必须为 `0600`。应用仅保存最后一次内存快照，不持久化进程历史或长期 GPU 使用记录。
 

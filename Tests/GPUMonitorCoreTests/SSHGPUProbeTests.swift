@@ -35,7 +35,7 @@ private actor ProbeRecordingRunner: CommandRunning {
     let runner = ProbeRecordingRunner(stdout: validNVIDIAOutput)
     let probe = SSHGPUProbe(
         runner: runner,
-        knownHostsURL: URL(fileURLWithPath: "/tmp/known_hosts")
+        knownHostsURL: URL(fileURLWithPath: "/tmp/Application Support/known_hosts")
     )
 
     let snapshot = try await probe.sample(server: .server10122)
@@ -59,12 +59,27 @@ private actor ProbeRecordingRunner: CommandRunning {
         "-o", "ServerAliveInterval=5",
         "-o", "ServerAliveCountMax=1",
         "-o", "StrictHostKeyChecking=yes",
-        "-o", "UserKnownHostsFile=/tmp/known_hosts",
+        "-o", "UserKnownHostsFile=\"/tmp/Application Support/known_hosts\"",
         "-o", "GlobalKnownHostsFile=/dev/null",
         "-o", "ClearAllForwardings=yes",
         "-o", "LogLevel=ERROR",
         "yanxiaoyang@122.207.108.8",
     ])
+}
+
+@Test func probeEscapesQuotesAndBackslashesInsideTheKnownHostsConfigValue() async throws {
+    let runner = ProbeRecordingRunner(stdout: validNVIDIAOutput)
+    let probe = SSHGPUProbe(
+        runner: runner,
+        knownHostsURL: URL(fileURLWithPath: "/tmp/GPU Monitor/quoted\"known\\hosts")
+    )
+
+    _ = try await probe.sample(server: .fixture)
+
+    let call = await runner.onlyCall
+    #expect(call.arguments.contains(
+        "UserKnownHostsFile=\"/tmp/GPU Monitor/quoted\\\"known\\\\hosts\""
+    ))
 }
 
 @Test func probeExpandsTildeInIdentityPath() async throws {
