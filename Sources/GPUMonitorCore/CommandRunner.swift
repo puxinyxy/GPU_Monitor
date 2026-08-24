@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public struct CommandResult: Equatable, Sendable {
     public let exitCode: Int32
@@ -66,12 +67,10 @@ public struct CommandRunner: CommandRunning, Sendable {
 
             let outputHandle = standardOutput.fileHandleForReading
             let errorHandle = standardError.fileHandleForReading
-            let outputTask = Task.detached {
-                outputHandle.readDataToEndOfFile()
-            }
-            let errorTask = Task.detached {
-                errorHandle.readDataToEndOfFile()
-            }
+            let outputReader = PipeReader(handle: outputHandle)
+            let errorReader = PipeReader(handle: errorHandle)
+            outputReader.start()
+            errorReader.start()
             let waitTask = Task.detached {
                 processBox.waitUntilExit(process)
             }
@@ -79,6 +78,8 @@ public struct CommandRunner: CommandRunning, Sendable {
                 do {
                     try await ContinuousClock().sleep(for: timeout)
                     processBox.timeout()
+                    try await ContinuousClock().sleep(for: .milliseconds(100))
+                    processBox.forceKillAfterTimeout()
                 } catch {
                     // Cancellation means the process completed before the deadline.
                 }
@@ -87,10 +88,11 @@ public struct CommandRunner: CommandRunning, Sendable {
             let completion = await waitTask.value
             timeoutTask.cancel()
 
-            let outputData = await outputTask.value
-            let errorData = await errorTask.value
-            let stdout = String(decoding: outputData, as: UTF8.self)
-            let stderr = String(decoding: errorData, as: UTF8.self)
+            async let outputData = outputReader.finishAfterProcessExit()
+            async let errorData = errorReader.finishAfterProcessExit()
+            let (capturedOutput, capturedError) = await (outputData, errorData)
+            let stdout = String(decoding: capturedOutput, as: UTF8.self)
+            let stderr = String(decoding: capturedError, as: UTF8.self)
 
             if completion.cancelled {
                 throw CancellationError()
@@ -105,6 +107,96 @@ public struct CommandRunner: CommandRunning, Sendable {
             return CommandResult(exitCode: completion.exitCode, stdout: stdout, stderr: stderr)
         } onCancel: {
             processBox.cancel()
+        }
+    }
+}
+
+private final class PipeReader: @unchecked Sendable {
+    private let state: PipeReadState
+    private let queue: DispatchQueue
+    private let channel: DispatchIO
+
+    init(handle: FileHandle) {
+        let state = PipeReadState()
+        let queue = DispatchQueue(label: "GPUMonitor.CommandRunner.PipeReader")
+        self.state = state
+        self.queue = queue
+        channel = DispatchIO(
+            type: .stream,
+            fileDescriptor: handle.fileDescriptor,
+            queue: queue
+        ) { _ in
+            try? handle.close()
+            state.finish()
+        }
+        channel.setLimit(lowWater: 1)
+    }
+
+    func start() {
+        channel.read(offset: 0, length: Int.max, queue: queue) { [state] done, data, _ in
+            state.receive(data, done: done)
+        }
+    }
+
+    func finishAfterProcessExit() async -> Data {
+        let forcedClose = Task.detached { [self] in
+            do {
+                try await ContinuousClock().sleep(for: .milliseconds(100))
+                channel.close(flags: .stop)
+            } catch {
+                // Natural EOF completed before the post-exit drain deadline.
+            }
+        }
+        let data = await state.value()
+        forcedClose.cancel()
+        channel.close()
+        return data
+    }
+}
+
+private final class PipeReadState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    private var continuation: CheckedContinuation<Data, Never>?
+    private var finished = false
+
+    func receive(_ newData: DispatchData?, done: Bool) {
+        var completedContinuation: CheckedContinuation<Data, Never>?
+        var completedData: Data?
+
+        lock.lock()
+        if !finished, let newData, !newData.isEmpty {
+            data.append(contentsOf: newData)
+        }
+        if done, !finished {
+            finished = true
+            completedContinuation = continuation
+            continuation = nil
+            completedData = data
+        }
+        lock.unlock()
+
+        if let completedContinuation, let completedData {
+            completedContinuation.resume(returning: completedData)
+        }
+    }
+
+    func finish() {
+        receive(nil, done: true)
+    }
+
+    func value() async -> Data {
+        await withCheckedContinuation { newContinuation in
+            lock.lock()
+            if finished {
+                let completedData = data
+                lock.unlock()
+                newContinuation.resume(returning: completedData)
+            } else {
+                precondition(continuation == nil)
+                continuation = newContinuation
+                lock.unlock()
+            }
         }
     }
 }
@@ -182,5 +274,18 @@ private final class SynchronizedProcess: @unchecked Sendable {
         if state == .running, let process, process.isRunning {
             process.terminate()
         }
+    }
+
+    func forceKillAfterTimeout() {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard didTimeOut,
+              state == .running,
+              let process,
+              process.isRunning else {
+            return
+        }
+        _ = Darwin.kill(process.processIdentifier, SIGKILL)
     }
 }

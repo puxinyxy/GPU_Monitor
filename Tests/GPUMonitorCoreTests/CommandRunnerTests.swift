@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 import GPUMonitorCore
 
@@ -47,6 +48,47 @@ import GPUMonitorCore
     }
 
     #expect(startedAt.duration(to: clock.now) < .seconds(1))
+}
+
+@Test func commandRunnerForceKillsAndReapsAChildThatIgnoresSIGTERM() async throws {
+    let pidURL = FileManager.default.temporaryDirectory
+        .appending(path: "gpu-monitor-term-resistant-\(UUID().uuidString).pid")
+    defer { try? FileManager.default.removeItem(at: pidURL) }
+    let clock = ContinuousClock()
+    let startedAt = clock.now
+
+    await #expect(throws: CommandError.timedOut) {
+        try await CommandRunner().run(
+            executable: "/bin/sh",
+            arguments: [
+                "-c",
+                "trap '' TERM; echo $$ > \"\(pidURL.path)\"; exec /bin/sleep 1.5",
+            ],
+            timeout: .milliseconds(50)
+        )
+    }
+
+    #expect(startedAt.duration(to: clock.now) < .milliseconds(700))
+    let pidText = try String(contentsOf: pidURL, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let pid = try #require(pid_t(pidText))
+    errno = 0
+    #expect(kill(pid, 0) == -1)
+    #expect(errno == ESRCH)
+}
+
+@Test func commandRunnerDoesNotWaitForDescendantHeldPipes() async throws {
+    let clock = ContinuousClock()
+    let startedAt = clock.now
+
+    let result = try await CommandRunner().run(
+        executable: "/bin/sh",
+        arguments: ["-c", "printf parent-output; /bin/sleep 1.5 & exit 0"],
+        timeout: .seconds(2)
+    )
+
+    #expect(result.stdout == "parent-output")
+    #expect(startedAt.duration(to: clock.now) < .milliseconds(700))
 }
 
 @Test func commandRunnerMapsNonzeroExitAndIncludesStandardError() async {
