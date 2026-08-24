@@ -8,16 +8,11 @@ public struct NotificationMessage: Equatable, Sendable {
     }
 }
 
-public protocol NotificationSink: Sendable {
-    func requestAuthorization() async
-    func send(events: [MonitorEvent]) async
-}
-
 public struct NotificationFormatter: Sendable {
     private enum MessageSlot {
         case free(serverID: String)
         case busy(serverID: String)
-        case offline(server: ServerConfig, message: String)
+        case offline(server: ServerConfig)
         case recovered(server: ServerConfig)
     }
 
@@ -47,8 +42,8 @@ public struct NotificationFormatter: Sendable {
                     }
                     busyGPUs[server.id, default: []].append(gpu)
                 }
-            case let .serverOffline(server, message):
-                slots.append(.offline(server: server, message: message))
+            case let .serverOffline(server, _):
+                slots.append(.offline(server: server))
             case let .serverRecovered(server):
                 slots.append(.recovered(server: server))
             }
@@ -78,10 +73,10 @@ public struct NotificationFormatter: Sendable {
                     title: "GPU 开始占用",
                     body: "服务器 \(serverLabel)：\(gpuList)"
                 )
-            case let .offline(server, message):
+            case let .offline(server):
                 return NotificationMessage(
                     title: "服务器已离线",
-                    body: "服务器 \(server.label) 已离线：\(message)"
+                    body: "服务器 \(server.label) 已离线，请检查连接"
                 )
             case let .recovered(server):
                 return NotificationMessage(
@@ -94,7 +89,13 @@ public struct NotificationFormatter: Sendable {
 
     private static func busyDescription(for gpu: GPUSnapshot) -> String {
         let prefix = "GPU \(gpu.index) 开始占用"
-        guard let process = gpu.processes.first else { return prefix }
+        guard let process = gpu.processes.min(by: processSortsBefore) else { return prefix }
         return "\(prefix)（\(process.name)，PID \(process.pid)）"
+    }
+
+    private static func processSortsBefore(_ lhs: GPUProcessInfo, _ rhs: GPUProcessInfo) -> Bool {
+        if lhs.pid != rhs.pid { return lhs.pid < rhs.pid }
+        if lhs.name != rhs.name { return lhs.name < rhs.name }
+        return lhs.usedMemoryMiB < rhs.usedMemoryMiB
     }
 }

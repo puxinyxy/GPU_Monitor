@@ -40,7 +40,7 @@ import GPUMonitorCore
     #expect(messages == [
         NotificationMessage(
             title: "服务器已离线",
-            body: "服务器 10222 已离线：connection timed out"
+            body: "服务器 10222 已离线，请检查连接"
         ),
         NotificationMessage(
             title: "服务器已恢复",
@@ -48,7 +48,7 @@ import GPUMonitorCore
         ),
         NotificationMessage(
             title: "服务器已离线",
-            body: "服务器 10222 已离线：host unreachable"
+            body: "服务器 10222 已离线，请检查连接"
         ),
     ])
 }
@@ -78,7 +78,7 @@ import GPUMonitorCore
     #expect(messages == [
         NotificationMessage(
             title: "服务器已离线",
-            body: "服务器 10222 已离线：connection timed out"
+            body: "服务器 10222 已离线，请检查连接"
         ),
         NotificationMessage(
             title: "GPU 开始占用",
@@ -87,6 +87,33 @@ import GPUMonitorCore
         NotificationMessage(
             title: "GPU 已空闲",
             body: "服务器 10165：GPU 2 已空闲"
+        ),
+    ])
+}
+
+@Test func formatterSelectsBusyProcessWithLowestPID() {
+    let gpu = GPUSnapshot(
+        index: 3,
+        uuid: "GPU-3",
+        name: "NVIDIA RTX 4090",
+        utilizationPercent: 90,
+        usedMemoryMiB: 20000,
+        totalMemoryMiB: 24564,
+        temperatureCelsius: 70,
+        processes: [
+            GPUProcessInfo(pid: 900, name: "later", usedMemoryMiB: 10000),
+            GPUProcessInfo(pid: 100, name: "first", usedMemoryMiB: 10000),
+        ]
+    )
+
+    let messages = NotificationFormatter().messages(for: [
+        .gpuChanged(server: .server10165, gpu: gpu, from: .free, to: .busy),
+    ])
+
+    #expect(messages == [
+        NotificationMessage(
+            title: "GPU 开始占用",
+            body: "服务器 10165：GPU 3 开始占用（first，PID 100）"
         ),
     ])
 }
