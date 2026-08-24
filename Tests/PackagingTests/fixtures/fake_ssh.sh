@@ -70,12 +70,18 @@ if (( has_remote_forward )); then
     exit 255
 fi
 
+if [[ "$remote_command" == *'/bin/sh -s -- rollback'* &&
+    "${GPU_MONITOR_TEST_ROLLBACK_FAILURE:-0}" == "1" ]]; then
+    exit 88
+fi
+
 if [[ "$remote_command" == *'/bin/sh -s'* ]]; then
     HOME="$GPU_MONITOR_TEST_REMOTE_HOME" /bin/sh -c "$remote_command"
     exit $?
 fi
 
 if [[ "$remote_command" == *'echo SHOULD_NOT_RUN'* ]]; then
+    [[ "${GPU_MONITOR_TEST_FORCED_FAILURE:-0}" == "1" ]] && exit 87
     print -r -- "${GPU_MONITOR_TEST_FORCED_OUTPUT:-${GPU_MONITOR_TEST_MONITOR_OUTPUT:-}}"
     exit 0
 fi

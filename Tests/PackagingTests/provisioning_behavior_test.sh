@@ -137,7 +137,13 @@ run_provisioner() {
         GPU_MONITOR_TEST_FORWARD_CRLF="${forward_crlf:-0}" \
         GPU_MONITOR_TEST_FORWARD_STYLE="${forward_style:-error}" \
         GPU_MONITOR_TEST_FORWARD_MULTILINE="${forward_multiline:-0}" \
+        GPU_MONITOR_TEST_FORCED_FAILURE="${forced_verification_failure:-0}" \
+        GPU_MONITOR_TEST_ROLLBACK_FAILURE="${rollback_failure:-0}" \
         "$provisioner" >"$stdout_log" 2>"$stderr_log"
+}
+
+rollback_call_count() {
+    /usr/bin/grep -Fc -- '/bin/sh -s -- rollback' "$ssh_log" || true
 }
 
 logged_ssh_calls_use_quoted_known_hosts() {
@@ -149,7 +155,7 @@ logged_ssh_calls_use_quoted_known_hosts() {
                 return
             }
             calls++
-            expected_port = calls <= 4 ? "10122" : "10165"
+            expected_port = calls <= 5 ? "10122" : "10165"
             if (known_hosts_count != 1 || port != expected_port) {
                 invalid = 1
             }
@@ -192,7 +198,7 @@ logged_ssh_calls_use_quoted_known_hosts() {
         { invalid = 1 }
 
         END {
-            if (in_call || calls != 8 || initial_calls != 2 || batch_calls != 6) {
+            if (in_call || calls != 10 || initial_calls != 2 || batch_calls != 8) {
                 invalid = 1
             }
             exit invalid ? 1 : 0
@@ -421,12 +427,78 @@ else
 fi
 unset forward_unrelated_failure
 
+new_case newly_added_forced_failure_rolls_back
+forced_verification_failure=1
+if run_provisioner; then
+    record_failure "newly added key is rolled back after forced-command verification failure"
+else
+    trusted_public_parts
+    matching_lines=$(/usr/bin/grep -Fxc -- "$expected_authorized_line" "$remote_home/.ssh/authorized_keys" || true)
+    if [[ "$matching_lines" == "0" && "$(rollback_call_count)" == "1" ]]; then
+        record_pass "newly added key is rolled back after forced-command verification failure"
+    else
+        record_failure "newly added key is rolled back after forced-command verification failure"
+    fi
+fi
+unset forced_verification_failure
+
+new_case newly_added_forwarding_failure_rolls_back
+forward_unrelated_failure=1
+if run_provisioner; then
+    record_failure "newly added key is rolled back after forwarding verification failure"
+else
+    trusted_public_parts
+    matching_lines=$(/usr/bin/grep -Fxc -- "$expected_authorized_line" "$remote_home/.ssh/authorized_keys" || true)
+    if [[ "$matching_lines" == "0" && "$(rollback_call_count)" == "1" ]]; then
+        record_pass "newly added key is rolled back after forwarding verification failure"
+    else
+        record_failure "newly added key is rolled back after forwarding verification failure"
+    fi
+fi
+unset forward_unrelated_failure
+
+new_case preexisting_line_is_never_rolled_back
+prepare_identity
+trusted_public_parts
+print -r -- "$expected_authorized_line" > "$remote_home/.ssh/authorized_keys"
+forced_verification_failure=1
+if run_provisioner; then
+    record_failure "pre-existing exact key survives later verification failure"
+else
+    matching_lines=$(/usr/bin/grep -Fxc -- "$expected_authorized_line" "$remote_home/.ssh/authorized_keys" || true)
+    if [[ "$matching_lines" == "1" && "$(rollback_call_count)" == "0" ]]; then
+        record_pass "pre-existing exact key survives later verification failure"
+    else
+        record_failure "pre-existing exact key survives later verification failure"
+    fi
+fi
+unset forced_verification_failure
+
+new_case rollback_failure_is_sanitized_and_fails_closed
+forced_verification_failure=1
+rollback_failure=1
+if run_provisioner; then
+    record_failure "rollback failure fails closed with sanitized manual remediation"
+else
+    trusted_public_parts
+    matching_lines=$(/usr/bin/grep -Fxc -- "$expected_authorized_line" "$remote_home/.ssh/authorized_keys" || true)
+    if [[ "$matching_lines" == "1" &&
+          "$(rollback_call_count)" == "1" &&
+          "$(<"$stderr_log")" == *"Manual remediation required"* ]] &&
+        ! /usr/bin/grep -Fq -- "$trusted_blob" "$stderr_log"; then
+        record_pass "rollback failure fails closed with sanitized manual remediation"
+    else
+        record_failure "rollback failure fails closed with sanitized manual remediation"
+    fi
+fi
+unset forced_verification_failure rollback_failure
+
 new_case valid_idempotent
 if run_provisioner && run_provisioner; then
     trusted_public_parts
     matching_lines=$(/usr/bin/grep -Fxc -- "$expected_authorized_line" "$remote_home/.ssh/authorized_keys" || true)
     total_lines=$(/usr/bin/wc -l < "$remote_home/.ssh/authorized_keys" | /usr/bin/tr -d ' ')
-    if [[ "$matching_lines" == "1" && "$total_lines" == "1" ]]; then
+    if [[ "$matching_lines" == "1" && "$total_lines" == "1" && "$(rollback_call_count)" == "0" ]]; then
         record_pass "valid provisioning is idempotent"
     else
         record_failure "valid provisioning is idempotent"

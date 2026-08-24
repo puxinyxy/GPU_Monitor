@@ -192,14 +192,106 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$authorized_keys"
 if [ "$blob_count" -eq 0 ]; then
     printf '%s\n' "$authorized_line" >> "$authorized_keys"
+    printf '%s\n' 'newly-installed'
 elif [ "$blob_count" -eq 1 ] && [ "$exact_count" -eq 1 ]; then
-    :
+    printf '%s\n' 'already-present'
 else
     printf '%s\n' 'Existing authorized_keys entries for this key are not uniquely and exactly restricted.' >&2
     exit 1
 fi
 REMOTE_SCRIPT
 )
+
+remote_rollback=$( /bin/cat <<'REMOTE_SCRIPT'
+set -eu
+umask 077
+ssh_dir="$HOME/.ssh"
+authorized_keys="$ssh_dir/authorized_keys"
+[ -f "$authorized_keys" ] || exit 1
+blob_count=$(awk -v blob="$key_blob" '
+    {
+        for (field = 1; field <= NF; field++) {
+            if ($field == blob) {
+                count++
+                break
+            }
+        }
+    }
+    END { print count + 0 }
+' "$authorized_keys")
+exact_count=0
+while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "$authorized_line" ]; then
+        exact_count=$((exact_count + 1))
+    fi
+done < "$authorized_keys"
+[ "$blob_count" -eq 1 ] && [ "$exact_count" -eq 1 ] || exit 1
+
+rollback_file=$(mktemp "$ssh_dir/.gpu-monitor-authorized-keys-rollback.XXXXXX") || exit 1
+trap 'rm -f "$rollback_file"' EXIT HUP INT TERM
+removed=0
+while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$removed" -eq 0 ] && [ "$line" = "$authorized_line" ]; then
+        removed=1
+        continue
+    fi
+    printf '%s\n' "$line" >> "$rollback_file"
+done < "$authorized_keys"
+[ "$removed" -eq 1 ] || exit 1
+chmod 600 "$rollback_file"
+mv "$rollback_file" "$authorized_keys"
+trap - EXIT HUP INT TERM
+
+post_exact_count=0
+while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "$authorized_line" ]; then
+        post_exact_count=$((post_exact_count + 1))
+    fi
+done < "$authorized_keys"
+[ "$post_exact_count" -eq 0 ] || exit 1
+printf '%s\n' 'rolled-back'
+REMOTE_SCRIPT
+)
+
+rollback_new_key() {
+    local port=$1
+    local destination=$2
+    local rollback_status
+
+    rollback_status=$({
+        print -r -- "$key_blob"
+        print -r -- "$authorized_line"
+        print -r -- "$remote_rollback"
+    } | LC_ALL=C "$ssh_bin" \
+        -T \
+        -F /dev/null \
+        -p "$port" \
+        -o BatchMode=no \
+        -o PreferredAuthentications=password \
+        -o PubkeyAuthentication=no \
+        -o StrictHostKeyChecking=yes \
+        -o "$known_hosts_option" \
+        "$destination" \
+        'IFS= read -r key_blob; IFS= read -r authorized_line; export key_blob authorized_line; /bin/sh -s -- rollback') || return 1
+    [[ "$rollback_status" == "rolled-back" ]]
+}
+
+fail_after_verification() {
+    local message=$1
+    local port=$2
+    local destination=$3
+    local key_was_newly_added=$4
+
+    if (( key_was_newly_added )); then
+        print -u2 "Security verification failed for port $port; rolling back the newly installed restricted key."
+        if ! rollback_new_key "$port" "$destination"; then
+            print -u2 "Provisioning failed: $message"
+            print -u2 "Automatic rollback failed for port $port. Manual remediation required: remove the GPU Monitor restricted authorized_keys entry on that server before retrying."
+            exit 1
+        fi
+    fi
+    fail "$message"
+}
 
 for port in $ports; do
     destination="$username@$host"
@@ -208,7 +300,7 @@ for port in $ports; do
     print "Provisioning $destination on port $port."
     print "ssh will prompt interactively for that server's login password if the key is not installed."
 
-    {
+    installation_status=$({
         print -r -- "$key_blob"
         print -r -- "$authorized_line"
         print -r -- "$remote_installer"
@@ -222,14 +314,24 @@ for port in $ports; do
         -o StrictHostKeyChecking=accept-new \
         -o "$known_hosts_option" \
         "$destination" \
-        'IFS= read -r key_blob; IFS= read -r authorized_line; export key_blob authorized_line; /bin/sh -s'
+        'IFS= read -r key_blob; IFS= read -r authorized_line; export key_blob authorized_line; /bin/sh -s') ||
+        fail "could not install the restricted key for port $port"
+    case "$installation_status" in
+        newly-installed) key_was_newly_added=1 ;;
+        already-present) key_was_newly_added=0 ;;
+        *) fail "the remote key installation result was invalid for port $port" ;;
+    esac
 
     fingerprints=$(
         /usr/bin/ssh-keygen -F "$host_token" -f "$known_hosts" 2>/dev/null |
             /usr/bin/grep -v '^#' |
             /usr/bin/ssh-keygen -lf -
-    ) || fail "could not read the learned host fingerprint for port $port"
-    [[ -n "$fingerprints" ]] || fail "no learned host fingerprint found for port $port"
+    ) || fail_after_verification \
+        "could not read the learned host fingerprint for port $port" \
+        "$port" "$destination" "$key_was_newly_added"
+    [[ -n "$fingerprints" ]] || fail_after_verification \
+        "no learned host fingerprint found for port $port" \
+        "$port" "$destination" "$key_was_newly_added"
     print "Learned host fingerprint for $host_token:"
     print -r -- "$fingerprints"
 
@@ -245,38 +347,59 @@ for port in $ports; do
     )
 
     sample_output=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" "$destination") ||
-        fail "restricted-key sample failed for port $port"
+        fail_after_verification "restricted-key sample failed for port $port" \
+            "$port" "$destination" "$key_was_newly_added"
     validate_monitor_output "$sample_output" ||
-        fail "restricted-key sample was not valid monitor output on port $port"
+        fail_after_verification \
+            "restricted-key sample was not valid monitor output on port $port" \
+            "$port" "$destination" "$key_was_newly_added"
 
     forced_output=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" "$destination" 'echo SHOULD_NOT_RUN') ||
-        fail "forced-command verification failed for port $port"
+        fail_after_verification "forced-command verification failed for port $port" \
+            "$port" "$destination" "$key_was_newly_added"
     if [[ "$forced_output" == *SHOULD_NOT_RUN* ]]; then
-        fail "the requested shell command ran on port $port"
+        fail_after_verification "the requested shell command ran on port $port" \
+            "$port" "$destination" "$key_was_newly_added"
     fi
     validate_monitor_output "$forced_output" ||
-        fail "the forced command did not return valid monitor output on port $port"
+        fail_after_verification \
+            "the forced command did not return valid monitor output on port $port" \
+            "$port" "$destination" "$key_was_newly_added"
 
     forwarding_stderr=""
     if forwarding_stderr=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" \
         -o ExitOnForwardFailure=yes \
         -R 127.0.0.1:0:127.0.0.1:1 \
         "$destination" true 2>&1 >/dev/null); then
-        fail "the restricted key unexpectedly allowed remote port forwarding on port $port"
+        fail_after_verification \
+            "the restricted key unexpectedly allowed remote port forwarding on port $port" \
+            "$port" "$destination" "$key_was_newly_added"
     else
         forwarding_status=$?
     fi
     forwarding_stderr="${forwarding_stderr%$'\r'}"
     if (( forwarding_status != 255 )); then
-        fail "could not prove that the server explicitly rejected remote port forwarding on port $port"
+        fail_after_verification \
+            "could not prove that the server explicitly rejected remote port forwarding on port $port" \
+            "$port" "$destination" "$key_was_newly_added"
     fi
     case "$forwarding_stderr" in
         'remote port forwarding failed for listen port 0'|'Error: remote port forwarding failed for listen port 0'|'Warning: remote port forwarding failed for listen port 0')
             ;;
         *)
-            fail "could not prove that the server explicitly rejected remote port forwarding on port $port"
+            fail_after_verification \
+                "could not prove that the server explicitly rejected remote port forwarding on port $port" \
+                "$port" "$destination" "$key_was_newly_added"
             ;;
     esac
+
+    final_output=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" "$destination") ||
+        fail_after_verification "final restricted-key validation failed for port $port" \
+            "$port" "$destination" "$key_was_newly_added"
+    validate_monitor_output "$final_output" ||
+        fail_after_verification \
+            "final restricted-key validation was not valid monitor output on port $port" \
+            "$port" "$destination" "$key_was_newly_added"
     print "Restricted key and forced command verified for port $port."
 done
 
