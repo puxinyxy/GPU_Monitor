@@ -323,6 +323,26 @@ private actor CancellationThenFailureProbe: GPUProbing {
     #expect(cycles.0.snapshots == cycles.1.snapshots)
 }
 
+@Test func pollCancelledBeforeCoordinatorEntryDoesNotStartAProbe() async {
+    let probe = CountingProbe()
+    let coordinator = MonitorCoordinator(servers: [.server10222], probe: probe)
+    let entryGate = CancellationCleanupGate()
+    let poll = Task {
+        await entryGate.pause()
+        return await coordinator.poll()
+    }
+    await entryGate.waitUntilEntered()
+
+    poll.cancel()
+    await entryGate.release()
+    let cycle = await poll.value
+
+    #expect(await probe.sampleCount == 0)
+    #expect(cycle.snapshots.isEmpty)
+    #expect(cycle.health.isEmpty)
+    #expect(cycle.events.isEmpty)
+}
+
 @Test func cancellingActivePollWaitsForProbeAndDoesNotClearANewerGeneration() async {
     let probe = CancellationGateProbe()
     let cleanupGate = CancellationCleanupGate()

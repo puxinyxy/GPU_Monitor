@@ -70,6 +70,15 @@ public actor MonitorCoordinator {
     private func performPoll(
         beforeCleanup: @Sendable () async -> Void
     ) async -> MonitorCycle {
+        guard !Task.isCancelled else {
+            return MonitorCycle(
+                snapshots: [:],
+                health: [:],
+                events: [],
+                completedAt: Date()
+            )
+        }
+
         let poll: ActivePoll
         if let activePoll {
             poll = activePoll

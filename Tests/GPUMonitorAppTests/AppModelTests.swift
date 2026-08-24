@@ -277,6 +277,38 @@ private actor ShutdownGatePoll {
     }
 }
 
+private actor PreRegistrationPollGate {
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var entered = false
+
+    func pause() async {
+        entered = true
+        enteredWaiter?.resume()
+        enteredWaiter = nil
+        await withCheckedContinuation { releaseContinuation = $0 }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiter = $0 }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor AppCountingProbe: GPUProbing {
+    private(set) var sampleCount = 0
+
+    func sample(server: ServerConfig) async -> ServerSnapshot {
+        sampleCount += 1
+        return snapshot(server: server, gpus: [gpu(index: 0, busy: false)])
+    }
+}
+
 private actor CancellationControlledPoll {
     private var startedWaiter: CheckedContinuation<Void, Never>?
     private var resultContinuation: CheckedContinuation<MonitorCycle, Never>?
@@ -744,6 +776,36 @@ func stopDoesNotWaitForNonCooperativeNotificationDeliveryOrApplyItsLateResult() 
     await stopTask.value
     await refreshTask.value
     #expect(model.snapshots.isEmpty)
+}
+
+@Test @MainActor
+func stopBeforeCoordinatorRegistrationPreventsTheCancelledRefreshFromStartingAProbe() async {
+    let gate = PreRegistrationPollGate()
+    let probe = AppCountingProbe()
+    let coordinator = MonitorCoordinator(servers: [server10222], probe: probe)
+    let notifications = FakeNotifications()
+    let model = AppModel(
+        servers: [server10222],
+        poll: {
+            await gate.pause()
+            return await coordinator.poll()
+        },
+        cancelPoll: { await coordinator.cancelActivePoll() },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { _ in throw CancellationError() }
+    )
+    let refresh = Task { await model.refresh() }
+    await gate.waitUntilEntered()
+
+    await model.stop()
+    #expect(await probe.sampleCount == 0)
+    await gate.release()
+    await refresh.value
+
+    #expect(await probe.sampleCount == 0)
+    #expect(model.snapshots.isEmpty)
+    #expect(model.health.isEmpty)
 }
 
 @Test @MainActor
