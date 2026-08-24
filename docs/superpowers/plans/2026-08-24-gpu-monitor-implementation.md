@@ -21,6 +21,7 @@
 - Use macOS system notifications in v1 and keep notification delivery behind a `NotificationSink` interface for later WeChat integration.
 - Keep source, design, plan, and documentation under `/Users/yxy/Documents/workspace/gpu-monitor`.
 - Use Swift Testing rather than XCTest because this Mac has Command Line Tools without `XCTest.framework`; the test target must add `/Library/Developer/CommandLineTools/Library/Developer/Frameworks` as both a framework search path and runtime rpath.
+- Execute tests with the `GPUMonitorCoreTestsRunner` executable target because Command Line Tools cannot run SwiftPM's generated `MH_BUNDLE`; `swift run GPUMonitorCoreTestsRunner` must print and execute the real test count.
 
 ---
 
@@ -48,6 +49,7 @@ gpu-monitor/
 ├── Tests/GPUMonitorCoreTests/
 │   ├── ConfigurationStoreTests.swift
 │   ├── TestSupport.swift
+│   ├── Runner.swift
 │   ├── NVIDIAOutputParserTests.swift
 │   ├── StateTrackerTests.swift
 │   ├── CommandRunnerTests.swift
@@ -76,6 +78,7 @@ gpu-monitor/
 - Create: `Sources/GPUMonitorApp/GPUMonitorApp.swift`
 - Test: `Tests/GPUMonitorCoreTests/ConfigurationStoreTests.swift`
 - Test support: `Tests/GPUMonitorCoreTests/TestSupport.swift`
+- Test runner: `Tests/GPUMonitorCoreTests/Runner.swift`
 
 **Interfaces:**
 - Produces: `ServerConfig`, `GPUProcessInfo`, `GPUSnapshot`, `ServerSnapshot`, `GPUOccupancy`, `ServerHealth`, `MonitorEvent`, `AppPaths`, and `ConfigurationStore.loadOrCreate()`.
@@ -89,6 +92,7 @@ gpu-monitor/
 import PackageDescription
 
 let developerFrameworks = "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"
+let developerLibraries = "/Library/Developer/CommandLineTools/Library/Developer/usr/lib"
 
 let package = Package(
     name: "GPUMonitor",
@@ -96,17 +100,20 @@ let package = Package(
     products: [
         .library(name: "GPUMonitorCore", targets: ["GPUMonitorCore"]),
         .executable(name: "GPUMonitor", targets: ["GPUMonitorApp"]),
+        .executable(name: "GPUMonitorCoreTestsRunner", targets: ["GPUMonitorCoreTestsRunner"]),
     ],
     targets: [
         .target(name: "GPUMonitorCore"),
         .executableTarget(name: "GPUMonitorApp", dependencies: ["GPUMonitorCore"]),
-        .testTarget(
-            name: "GPUMonitorCoreTests",
+        .executableTarget(
+            name: "GPUMonitorCoreTestsRunner",
             dependencies: ["GPUMonitorCore"],
+            path: "Tests/GPUMonitorCoreTests",
             swiftSettings: [.unsafeFlags(["-F", developerFrameworks])],
             linkerSettings: [.unsafeFlags([
                 "-F", developerFrameworks,
                 "-Xlinker", "-rpath", "-Xlinker", developerFrameworks,
+                "-Xlinker", "-rpath", "-Xlinker", developerLibraries,
             ])]
         ),
     ],
@@ -146,7 +153,7 @@ struct GPUMonitorApp: App {
 
 - [ ] **Step 3: Run the test and verify the missing types fail compilation**
 
-Run: `swift test --filter ConfigurationStoreTests`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: FAIL with unresolved identifiers `ConfigurationStore` and `ServerConfig`.
 
@@ -209,7 +216,7 @@ public enum MonitorEvent: Equatable, Sendable {
 
 - [ ] **Step 5: Run the focused test and full build**
 
-Run: `swift test --filter ConfigurationStoreTests && swift build`
+Run: `swift run GPUMonitorCoreTestsRunner && swift build`
 
 Expected: PASS and `Build complete!`.
 
@@ -258,7 +265,7 @@ GPU-b, 12345, python, 18100
 
 - [ ] **Step 2: Run the parser tests and verify failure**
 
-Run: `swift test --filter NVIDIAOutputParserTests`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: FAIL because `NVIDIAOutputParser` does not exist.
 
@@ -287,7 +294,7 @@ Trim every CSV field. GPU rows require exactly seven fields and numeric index/ut
 
 - [ ] **Step 4: Run parser tests and the full suite**
 
-Run: `swift test --filter NVIDIAOutputParserTests && swift test`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: all tests PASS.
 
@@ -335,7 +342,7 @@ git commit -m "feat: parse NVIDIA GPU and process snapshots"
 
 - [ ] **Step 2: Run the state tests and verify failure**
 
-Run: `swift test --filter StateTrackerTests`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: FAIL because `StateTracker` and `StateUpdate` do not exist.
 
@@ -368,7 +375,7 @@ On a normal recovery from one or two failures, retain GPU confirmation history. 
 
 - [ ] **Step 4: Run transition tests and the full suite**
 
-Run: `swift test --filter StateTrackerTests && swift test`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: all tests PASS.
 
@@ -429,7 +436,7 @@ git commit -m "feat: track confirmed GPU and server state changes"
 
 - [ ] **Step 3: Run both focused test groups and verify failure**
 
-Run: `swift test --filter CommandRunnerTests && swift test --filter SSHGPUProbeTests`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: FAIL because the runner and probe types do not exist.
 
@@ -473,7 +480,7 @@ Pass `.seconds(8)` to the runner, parse stdout with `NVIDIAOutputParser`, and ma
 
 - [ ] **Step 6: Run focused and full tests**
 
-Run: `swift test --filter CommandRunnerTests && swift test --filter SSHGPUProbeTests && swift test`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: all tests PASS.
 
@@ -517,7 +524,7 @@ git commit -m "feat: query GPU snapshots over restricted SSH"
 
 - [ ] **Step 2: Run the coordinator tests and verify failure**
 
-Run: `swift test --filter MonitorCoordinatorTests`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: FAIL because `MonitorCoordinator` and `MonitorCycle` do not exist.
 
@@ -548,7 +555,7 @@ Serialize overlapping manual/timer refreshes inside the actor by returning the a
 
 - [ ] **Step 4: Run coordinator and full tests**
 
-Run: `swift test --filter MonitorCoordinatorTests && swift test`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: all tests PASS.
 
@@ -595,7 +602,7 @@ git commit -m "feat: coordinate concurrent GPU server polling"
 
 - [ ] **Step 2: Run formatting tests and verify failure**
 
-Run: `swift test --filter NotificationFormatterTests`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: FAIL because the formatter types do not exist.
 
@@ -617,7 +624,7 @@ Sort GPU indices numerically. Produce separate free and busy messages per server
 
 - [ ] **Step 4: Run tests and compile the app target**
 
-Run: `swift test --filter NotificationFormatterTests && swift test && swift build --product GPUMonitor`
+Run: `swift run GPUMonitorCoreTestsRunner && swift build --product GPUMonitor`
 
 Expected: all tests PASS and app target builds.
 
@@ -717,7 +724,7 @@ Expected: a `GPU —/—` menu item appears; configuration/SSH errors are visibl
 
 - [ ] **Step 4: Run the entire unit suite**
 
-Run: `swift test`
+Run: `swift run GPUMonitorCoreTestsRunner`
 
 Expected: all tests PASS.
 
@@ -789,7 +796,7 @@ README commands must be exact:
 ```bash
 cd /Users/yxy/Documents/workspace/gpu-monitor
 ./scripts/provision_ssh.sh
-swift test
+swift run GPUMonitorCoreTestsRunner
 ./scripts/package_app.sh
 ./scripts/install_app.sh
 ```
@@ -802,7 +809,7 @@ Run:
 
 ```bash
 zsh -n scripts/package_app.sh scripts/install_app.sh scripts/provision_ssh.sh
-swift test
+swift run GPUMonitorCoreTestsRunner
 ./scripts/package_app.sh
 codesign --verify --deep --strict --verbose=2 "dist/GPU Monitor.app"
 plutil -lint "dist/GPU Monitor.app/Contents/Info.plist"
@@ -834,7 +841,7 @@ git commit -m "feat: package and provision GPU Monitor"
 
 - [ ] **Step 1: Run all automated verification before touching remote state**
 
-Run: `swift test && ./scripts/package_app.sh`
+Run: `swift run GPUMonitorCoreTestsRunner && ./scripts/package_app.sh`
 
 Expected: all tests PASS and the app bundle signature verifies.
 
@@ -846,7 +853,7 @@ Expected for both ports: host fingerprint shown, password accepted, key appended
 
 - [ ] **Step 3: Capture and validate real GPU samples**
 
-Run the exact `BatchMode=yes` SSH command for each configured port and save output only under a temporary directory created by `mktemp -d`. Feed each output through a small `swift test` integration harness or the app's probe path. Confirm at least one GPU row per reachable server and no parse errors. Delete the temporary directory after validation.
+Run the exact `BatchMode=yes` SSH command for each configured port and save output only under a temporary directory created by `mktemp -d`. Feed each output through a temporary executable integration harness or the app's probe path. Confirm at least one GPU row per reachable server and no parse errors. Delete the temporary directory after validation.
 
 - [ ] **Step 4: Install and launch the app**
 
@@ -871,7 +878,7 @@ Verify these acceptance checks:
 Run:
 
 ```bash
-swift test
+swift run GPUMonitorCoreTestsRunner
 git status --short
 codesign --verify --deep --strict --verbose=2 "/Applications/GPU Monitor.app"
 plutil -p "/Applications/GPU Monitor.app/Contents/Info.plist" | grep 'LSUIElement.*1'
