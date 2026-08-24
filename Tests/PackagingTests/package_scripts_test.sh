@@ -66,6 +66,7 @@ app_entry="$project_dir/Sources/GPUMonitorApp/GPUMonitorApp.swift"
 menu_view="$project_dir/Sources/GPUMonitorApp/MenuContentView.swift"
 lifecycle_delegate="$project_dir/Sources/GPUMonitorApp/AppLifecycleDelegate.swift"
 notification_sink="$project_dir/Sources/GPUMonitorNotifications/MacOSNotificationSink.swift"
+compatibility_client="$project_dir/Sources/GPUMonitorNotifications/AppleScriptNotificationClient.swift"
 install_behavior_test="$project_dir/Tests/PackagingTests/install_app_behavior_test.sh"
 stale_first_port='102''22'
 
@@ -101,6 +102,13 @@ check "opening the menu refreshes authorization with a cancellable view task" fi
 check "menu quit delegates shutdown to NSApplication" file_contains "$menu_view" 'NSApplication.shared.terminate(nil)'
 check "menu quit does not duplicate model shutdown" file_not_contains "$menu_view" 'await model.stop()'
 check "foreground callback delegates through the tested presentation helper" file_contains "$notification_sink" 'completeForegroundPresentation(using: completionHandler)'
+check "compatibility notification client exists" test -f "$compatibility_client"
+check "compatibility notifications use the absolute system osascript" file_contains "$compatibility_client" 'executable: "/usr/bin/osascript"'
+check "compatibility notifications use argv terminator" file_contains "$compatibility_client" '"--", title, body'
+check "compatibility notification text is read from argv" file_contains "$compatibility_client" 'display notification (item 2 of argv) with title "GPU Monitor" subtitle (item 1 of argv)'
+check "compatibility notifications never invoke a shell" file_not_contains "$compatibility_client" '/bin/sh'
+check "compatibility notifications never invoke zsh" file_not_contains "$compatibility_client" 'zsh -c'
+check "compatibility notifications never use AppleScript shell execution" file_not_contains "$compatibility_client" 'do shell script'
 check "offline installer behavior harness exists" test -f "$install_behavior_test"
 check "offline installer harness has a temp-root safety guard" file_contains "$install_behavior_test" 'gpu-monitor-install-test.'
 check "offline installer harness traps cleanup" file_contains "$install_behavior_test" 'trap cleanup EXIT INT TERM'
@@ -151,6 +159,7 @@ check "README has strict concurrency verification" file_contains "$readme" '-str
 check "README has exact package command" file_contains "$readme" './scripts/package_app.sh'
 check "README has exact install command" file_contains "$readme" './scripts/install_app.sh'
 check "README documents no login-item setup" file_contains "$readme" '不配置开机自启'
+check "README documents Script Editor compatibility branding" file_contains "$readme" '脚本编辑器'
 check "README documents graceful installer shutdown" file_contains "$readme" 'Apple Event 请求已安装实例正常退出'
 check "README documents privacy" file_contains "$readme" '隐私'
 check "README documents server editing" file_contains "$readme" 'servers.json'

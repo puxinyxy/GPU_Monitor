@@ -29,6 +29,10 @@ zsh Tests/PackagingTests/package_scripts_test.sh
 swift build -Xswiftc -swift-version -Xswiftc 6 -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 ```
 
+## 通知模式
+
+应用优先使用 `UserNotifications` 发送来源为 GPU Monitor 的原生通知。当前 ad-hoc 签名若被 macOS 以 `notificationsNotAllowed` 拒绝，应用会自动进入“通知：兼容模式”，通过固定的 `/usr/bin/osascript` 系统通道投递；通知标题仍为 GPU Monitor，系统显示的来源为“脚本编辑器”。标题和正文作为独立参数传入，不经过 Shell。用户若明确拒绝通知，应用不会启用兼容模式。以后用有效 Apple 证书签名后，应用会自动恢复原生通道。
+
 ## 状态含义
 
 - 绿色：全部服务器在线，且至少一张 GPU 空闲。

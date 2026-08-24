@@ -88,6 +88,8 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 
 首版的 `MacOSNotificationSink` 使用 `UserNotifications`。应用启动前安装并强引用 `UNUserNotificationCenterDelegate`，使应用位于前台时通知仍以 banner/list 展示并播放系统提示音。通知权限会在每次刷新、菜单面板每次呈现及应用重新激活时重新读取；并发读取合并为一个任务，菜单关闭会取消对应的 SwiftUI view task，停止后返回的旧结果会被丢弃。同一服务器在同一次采样中有多张 GPU 变化时合并为一条通知，例如：
 
+当前 ad-hoc 签名被系统以 `UNError.Code.notificationsNotAllowed` 拒绝且授权状态不是 `denied` 时，通知适配器切换到安全兼容模式：固定调用 `/usr/bin/osascript`，固定标题为“GPU Monitor”，把事件标题作为副标题、正文作为独立 argv 传入。菜单显示橙色“通知：兼容模式”，系统通知来源显示为“脚本编辑器”。原生权限以后可用时自动恢复原生通道；用户明确拒绝时绝不回退。
+
 ```text
 服务器 10122：GPU 0、GPU 2 已空闲
 服务器 10165：GPU 1 开始占用（python，PID 12345）
@@ -150,7 +152,9 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 - 单行 GPU 数据格式错误：本次服务器采样整体失败，避免产生部分状态误报。
 - GPU UUID/名称、进程 GPU UUID/名称不得为空；GPU UUID 与 index 不得重复；进程 GPU UUID 必须引用本次 GPU 清单。
 - 无计算进程输出：正常解析为所有 GPU 空闲。
-- 通知权限被拒绝：菜单栏继续工作，并在面板显示“通知未授权”。
+- 通知权限明确被用户拒绝：菜单栏继续工作并显示“通知：未授权”，不得启用兼容通道。
+- ad-hoc 签名触发精确的 `notificationsNotAllowed` 错误：启用兼容通道；其他授权错误显示“通知：状态错误”。
+- 兼容通知启动失败、超时或非零退出：只把对应消息记为调度失败，不泄露命令 stderr 或通知正文。
 - 应用退出：所有正常退出路径由 AppKit 生命周期桥统一进入异步停止流程，等待取消定时器和正在运行的 SSH 子进程后再答复系统允许退出；重复退出请求共享一次停止，并在停止完成后逐一答复所有仍在等待的系统请求。
 
 日志只记录时间、服务器标识、错误类别和状态变化，不记录密码、私钥内容或认证令牌。
@@ -169,6 +173,8 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 - 连续三次连接失败触发一次离线事件，恢复后触发一次在线事件。
 - 非 connectivity 失败不会累计或触发离线；主机密钥失败显示安全 health。
 - GPU/compute query 非零的离线 command harness 都验证整体命令非零；成功的空进程输出仍视为正常空闲。
+- 精确匹配 `notificationsNotAllowed`、明确拒绝不回退、原生权限恢复和兼容投递取消。
+- 验证兼容通知固定使用 `/usr/bin/osascript`，动态内容只作为 argv，不能进入 AppleScript 源码或 Shell。
 
 ### 集成测试
 
@@ -183,6 +189,7 @@ probe 失败保留脱敏的结构化分类：connectivity、host-key/security、
 - 菜单栏每 15 秒更新，手动刷新可用。
 - 模拟状态变化时只发送预期通知。
 - 应用不出现在“登录项”中。
+- 当前 ad-hoc 安装显示“通知：兼容模式”，10165 连续三次连接拒绝后由通知中心展示一次离线通知，后续轮询不重复发送。
 - 安装器的离线行为 harness 在临时目录用假命令覆盖无匹配进程、不同 UID/路径、Apple Event 失败、退出超时和正常退出顺序，保证测试不接触真实 `/Applications`、进程或 Apple Event。
 
 ## 9. 交付物
