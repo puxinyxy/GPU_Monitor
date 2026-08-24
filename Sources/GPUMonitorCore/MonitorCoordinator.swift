@@ -20,10 +20,16 @@ public struct MonitorCycle: Sendable {
 }
 
 public actor MonitorCoordinator {
+    private struct ActivePoll {
+        let generation: UInt64
+        let task: Task<MonitorCycle, Never>
+    }
+
     private let servers: [ServerConfig]
     private let probe: any GPUProbing
     private let tracker: StateTracker
-    private var activePoll: Task<MonitorCycle, Never>?
+    private var activePoll: ActivePoll?
+    private var nextPollGeneration: UInt64 = 0
 
     public init(
         servers: [ServerConfig],
@@ -36,16 +42,22 @@ public actor MonitorCoordinator {
     }
 
     public func poll() async -> MonitorCycle {
+        let poll: ActivePoll
         if let activePoll {
-            return await activePoll.value
+            poll = activePoll
+        } else {
+            nextPollGeneration &+= 1
+            let task = Task { [servers, probe, tracker] in
+                await Self.runPoll(servers: servers, probe: probe, tracker: tracker)
+            }
+            poll = ActivePoll(generation: nextPollGeneration, task: task)
+            activePoll = poll
         }
 
-        let task = Task { [servers, probe, tracker] in
-            await Self.runPoll(servers: servers, probe: probe, tracker: tracker)
+        let cycle = await poll.task.value
+        if activePoll?.generation == poll.generation {
+            activePoll = nil
         }
-        activePoll = task
-        let cycle = await task.value
-        activePoll = nil
         return cycle
     }
 
