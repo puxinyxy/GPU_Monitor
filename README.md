@@ -1,10 +1,19 @@
 # GPU Monitor
 
-GPU Monitor 是 macOS 14 及以上版本的原生菜单栏应用。它每 15 秒通过专用受限 SSH 密钥查询两台服务器的 GPU 状态，并在 GPU 占用状态或服务器在线状态稳定变化时发送系统通知。应用不配置开机自启，也不提供远程终端或进程控制能力。
+GPU Monitor 是 macOS 14 及以上版本的原生菜单栏应用。它每 15 秒通过专用受限 SSH 密钥查询四台服务器的 GPU 状态，并在 GPU 占用状态或服务器在线状态稳定变化时发送系统通知。应用不配置开机自启，也不提供远程终端或进程控制能力。
 
 ## 安装
 
-在终端中依次运行以下命令。SSH 配置会分别为端口 `10122` 和 `10165` 请求一次服务器登录密码；密码由系统 `ssh` 直接读取，不进入脚本、配置、日志或应用包。首次连接采用 TOFU，脚本会显示保存到专用 `known_hosts` 的主机指纹，请与服务器管理员提供的指纹核对。
+在终端中依次运行以下命令。SSH 配置会按顺序访问 `10122`、`10165`、`18200` 和 `13000`；需要认证时，密码只由系统 `ssh` 在交互式终端读取，不进入脚本、配置、日志或应用包。
+
+| 显示名称 | SSH 端点 |
+| --- | --- |
+| `3090 · 10122` | `122.207.108.8:10122` |
+| `3090 · 10165` | `122.207.108.7:10165` |
+| `A100 · 18200` | `js2.blockelite.cn:18200` |
+| `A100 · 13000` | `js2.blockelite.cn:13000` |
+
+首次连接采用 TOFU，脚本会显示保存到专用 `known_hosts` 的主机指纹，请与服务器管理员提供的指纹核对。
 
 ```bash
 cd /Users/yxy/Documents/workspace/gpu-monitor
@@ -54,7 +63,7 @@ GPU 的空闲/占用由是否存在计算进程判断。利用率、显存和温
 ~/Library/Application Support/GPUMonitor/servers.json
 ```
 
-退出 GPU Monitor 后可编辑这个 JSON 文件中的 `id`、`label`、`host`、`port`、`username` 和 `identityFile`，再重新打开应用。配置不得加入密码。升级时，应用只会把精确匹配 `server-10165`、`122.207.108.8:10165` 的旧端点原子迁移到 `122.207.108.7:10165`；第一台和其他自定义记录保持不变。SSH 主机密钥固定在：
+退出 GPU Monitor 后可编辑这个 JSON 文件中的 `id`、`label`、`host`、`port`、`username` 和 `identityFile`，再重新打开应用。配置不得加入密码。升级时，应用先纠正精确匹配的旧 `server-10165` 地址，再只更新仍使用旧数字标签的两台 3090 记录，并按批准顺序追加缺失的 A100 端点。自定义标签、记录、用户名、密钥路径和相对顺序会保留；同一主机名和端口不会重复添加，批准 ID 冲突时使用稳定回退 ID。只有配置实际变化时才原子写回。SSH 主机密钥固定在：
 
 ```text
 ~/Library/Application Support/GPUMonitor/known_hosts
@@ -90,11 +99,13 @@ rm -rf "/Applications/GPU Monitor.app"
 awk '{print $2}' "$HOME/.ssh/gpu_monitor_ed25519.pub"
 ```
 
-再分别登录两个端口，备份并编辑 `authorized_keys`：
+再分别登录四个端口，备份并编辑 `authorized_keys`：
 
 ```bash
 ssh -p 10122 yanxiaoyang@122.207.108.8
 ssh -p 10165 yanxiaoyang@122.207.108.7
+ssh -p 18200 yanxiaoyang@js2.blockelite.cn
+ssh -p 13000 yanxiaoyang@js2.blockelite.cn
 ```
 
 在每台服务器上运行 `cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.gpu-monitor-backup`，然后用编辑器只删除公钥 blob 与上一步输出完全相同的那一行。此远端操作是独立、显式步骤；任何卸载脚本都不会代为执行。

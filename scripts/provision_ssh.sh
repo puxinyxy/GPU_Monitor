@@ -11,6 +11,8 @@ username="yanxiaoyang"
 endpoint_specs=(
     "122.207.108.8 10122"
     "122.207.108.7 10165"
+    "js2.blockelite.cn 18200"
+    "js2.blockelite.cn 13000"
 )
 ssh_dir="$HOME/.ssh"
 identity_file="$ssh_dir/gpu_monitor_ed25519"

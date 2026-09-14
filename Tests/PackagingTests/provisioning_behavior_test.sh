@@ -107,6 +107,8 @@ new_case() {
     {
         print -r -- "[122.207.108.8]:10122 $host_type $host_blob"
         print -r -- "[122.207.108.7]:10165 $host_type $host_blob"
+        print -r -- "[js2.blockelite.cn]:18200 $host_type $host_blob"
+        print -r -- "[js2.blockelite.cn]:13000 $host_type $host_blob"
     } > "$case_home/Library/Application Support/GPUMonitor/known_hosts"
 }
 
@@ -149,27 +151,29 @@ rollback_call_count() {
 logged_ssh_calls_use_quoted_known_hosts() {
     local expected="UserKnownHostsFile=\"$case_home/Library/Application Support/GPUMonitor/known_hosts\""
     /usr/bin/awk -v expected="$expected" '
-        function finish_call() {
-            if (!in_call) {
-                invalid = 1
-                return
-            }
+        function finish_call( expected_port, expected_destination) {
+            if (!in_call) { invalid = 1; return }
             calls++
-            expected_port = calls <= 5 ? "10122" : "10165"
-            destination_count = calls <= 5 \
-                ? first_destination_count \
-                : second_destination_count
-            if (known_hosts_count != 1 || port != expected_port ||
-                destination_count != 1) {
-                invalid = 1
-            }
-            if (batch_mode == "no") {
-                initial_calls++
-            } else if (batch_mode == "yes") {
-                batch_calls++
+            if (calls <= 5) {
+                expected_port = "10122"
+                expected_destination = "yanxiaoyang@122.207.108.8"
+            } else if (calls <= 10) {
+                expected_port = "10165"
+                expected_destination = "yanxiaoyang@122.207.108.7"
+            } else if (calls <= 15) {
+                expected_port = "18200"
+                expected_destination = "yanxiaoyang@js2.blockelite.cn"
             } else {
+                expected_port = "13000"
+                expected_destination = "yanxiaoyang@js2.blockelite.cn"
+            }
+            if (known_hosts_count != 1 || port != expected_port ||
+                destination_count != 1 || destination != expected_destination) {
                 invalid = 1
             }
+            if (batch_mode == "no") initial_calls++
+            else if (batch_mode == "yes") batch_calls++
+            else invalid = 1
             in_call = 0
         }
 
@@ -179,26 +183,21 @@ logged_ssh_calls_use_quoted_known_hosts() {
             known_hosts_count = 0
             batch_mode = ""
             port = ""
-            first_destination_count = 0
-            second_destination_count = 0
+            destination = ""
+            destination_count = 0
             expecting_port = 0
             next
         }
-        $0 == "__GPU_MONITOR_SSH_END__" {
-            finish_call()
-            next
-        }
+        $0 == "__GPU_MONITOR_SSH_END__" { finish_call(); next }
         in_call && index($0, "ARG:") == 1 {
             argument = substr($0, 5)
-            if (expecting_port) {
-                port = argument
-                expecting_port = 0
-            } else if (argument == "-p") {
-                expecting_port = 1
-            }
+            if (expecting_port) { port = argument; expecting_port = 0 }
+            else if (argument == "-p") expecting_port = 1
             if (argument == expected) known_hosts_count++
-            if (argument == "yanxiaoyang@122.207.108.8") first_destination_count++
-            if (argument == "yanxiaoyang@122.207.108.7") second_destination_count++
+            if (argument ~ /^yanxiaoyang@/) {
+                destination_count++
+                destination = argument
+            }
             if (argument == "BatchMode=no") batch_mode = "no"
             if (argument == "BatchMode=yes") batch_mode = "yes"
             next
@@ -206,9 +205,7 @@ logged_ssh_calls_use_quoted_known_hosts() {
         { invalid = 1 }
 
         END {
-            if (in_call || calls != 10 || initial_calls != 2 || batch_calls != 8) {
-                invalid = 1
-            }
+            if (in_call || calls != 20 || initial_calls != 4 || batch_calls != 16) invalid = 1
             exit invalid ? 1 : 0
         }
     ' "$ssh_log"
