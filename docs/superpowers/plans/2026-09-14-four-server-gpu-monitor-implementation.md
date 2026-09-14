@@ -1174,6 +1174,7 @@ expected_ids=("server-10122" "server-10165" "server-a100-18200" "server-a100-130
 expected_labels=("3090 · 10122" "3090 · 10165" "A100 · 18200" "A100 · 13000")
 expected_hosts=("122.207.108.8" "122.207.108.7" "js2.blockelite.cn" "js2.blockelite.cn")
 expected_ports=(10122 10165 18200 13000)
+value_sentinel=$'\x1f'
 
 structure_check=$(
     /usr/bin/plutil -convert xml1 -o - "$config" |
@@ -1184,14 +1185,26 @@ structure_check=$(
 
 for index in 0 1 2 3; do
     expected_index=$((index + 1))
-    actual=$(/usr/bin/plutil -extract "$index.id" raw -expect string -o - "$config")
-    [[ "$actual" == "$expected_ids[$expected_index]" ]]
-    actual=$(/usr/bin/plutil -extract "$index.label" raw -expect string -o - "$config")
-    [[ "$actual" == "$expected_labels[$expected_index]" ]]
-    actual=$(/usr/bin/plutil -extract "$index.host" raw -expect string -o - "$config")
-    [[ "$actual" == "$expected_hosts[$expected_index]" ]]
-    actual=$(/usr/bin/plutil -extract "$index.port" raw -expect integer -o - "$config")
-    [[ "$actual" == "$expected_ports[$expected_index]" ]]
+    actual=$(
+        /usr/bin/plutil -extract "$index.id" raw -expect string -n -o - "$config" &&
+            print -n -- "$value_sentinel"
+    )
+    [[ "$actual" == "${expected_ids[$expected_index]}$value_sentinel" ]]
+    actual=$(
+        /usr/bin/plutil -extract "$index.label" raw -expect string -n -o - "$config" &&
+            print -n -- "$value_sentinel"
+    )
+    [[ "$actual" == "${expected_labels[$expected_index]}$value_sentinel" ]]
+    actual=$(
+        /usr/bin/plutil -extract "$index.host" raw -expect string -n -o - "$config" &&
+            print -n -- "$value_sentinel"
+    )
+    [[ "$actual" == "${expected_hosts[$expected_index]}$value_sentinel" ]]
+    actual=$(
+        /usr/bin/plutil -extract "$index.port" raw -expect integer -n -o - "$config" &&
+            print -n -- "$value_sentinel"
+    )
+    [[ "$actual" == "${expected_ports[$expected_index]}$value_sentinel" ]]
 done
 set +e
 /usr/bin/grep -Fiq -- password "$config"
@@ -1205,7 +1218,7 @@ set -e
 )
 ```
 
-Expected ID/label/host/port values appear in the approved order, the XML conversion plus XPath check confirms a top-level four-record array without modifying the JSON source, the password-field check succeeds silently, and all four host-key lookups exit zero.
+Expected ID/label/host/port values appear in the approved order with byte-preserving typed extractions: `-n` suppresses plutil's presentation newline and the non-newline sentinel prevents command substitution from stripping any configured trailing newline. The XML conversion plus XPath check confirms a top-level four-record array without modifying the JSON source, the password-field check succeeds silently, and all four host-key lookups exit zero.
 
 - [ ] **Step 7: Exercise the running menu and observe exact app-owned SSH pairings**
 
@@ -1241,6 +1254,26 @@ while (( SECONDS < end_at )); do
     done < <(/bin/ps -axo ppid=,command=)
     /bin/sleep 0.01
 done
+typeset -A observed_ssh_commands
+while read -r child_pid parent_pid command; do
+    [[ "$parent_pid" == "$app_pid" && "$command" == /usr/bin/ssh\ * ]] || continue
+    observed_ssh_commands[$child_pid]="$command"
+done < <(/bin/ps -axo pid=,ppid=,command=)
+
+is_same_app_owned_ssh_child() {
+    local target_pid="$1"
+    local target_command="$2"
+    local candidate_pid candidate_parent_pid candidate_command
+    while read -r candidate_pid candidate_parent_pid candidate_command; do
+        if [[ "$candidate_pid" == "$target_pid" &&
+            "$candidate_parent_pid" == "$app_pid" &&
+            "$candidate_command" == "$target_command" &&
+            "$candidate_command" == /usr/bin/ssh\ * ]]; then
+            return 0
+        fi
+    done < <(/bin/ps -axo pid=,ppid=,command=)
+    return 1
+}
 observation_failed=0
 for expected_pair in \
     '122.207.108.8 10122' \
@@ -1258,20 +1291,17 @@ if (( unexpected_pair != 0 )); then
     print -u2 -- "Observed an unapproved app-owned SSH endpoint pairing"
     observation_failed=1
 fi
-for _ in {1..100}; do
-    active_ssh_children=0
-    while read -r parent_pid command; do
-        if [[ "$parent_pid" == "$app_pid" && "$command" == /usr/bin/ssh\ * ]]; then
-            active_ssh_children=$((active_ssh_children + 1))
-        fi
-    done < <(/bin/ps -axo ppid=,command=)
-    (( active_ssh_children == 0 )) && break
-    /bin/sleep 0.1
+for captured_pid in ${(k)observed_ssh_commands}; do
+    captured_command="${observed_ssh_commands[$captured_pid]}"
+    for _ in {1..320}; do
+        is_same_app_owned_ssh_child "$captured_pid" "$captured_command" || break
+        /bin/sleep 0.1
+    done
+    if is_same_app_owned_ssh_child "$captured_pid" "$captured_command"; then
+        print -u2 -- "Captured app-owned SSH process remained after the 32-second per-PID drain wait"
+        observation_failed=1
+    fi
 done
-if (( active_ssh_children != 0 )); then
-    print -u2 -- "App-owned SSH process remained after the bounded drain wait"
-    observation_failed=1
-fi
 (( observation_failed == 0 ))
 )
 ```
@@ -1285,7 +1315,7 @@ js2.blockelite.cn 18200
 js2.blockelite.cn 13000
 ```
 
-No `122.207.108.8:10165`, no stale `10222`, and no cross-paired `js2.blockelite.cn` port may appear. After the cycle, no SSH child should remain stuck. `ps` sampling is corroborating runtime evidence rather than a deterministic exec audit: if an expected short-lived process is missed, rerun this observer once with the synchronized refresh before diagnosing the app; the exact production probe verifier in Step 3, live configuration in Step 6, and visible four-server data remain mandatory independent gates.
+No `122.207.108.8:10165`, no stale `10222`, and no cross-paired `js2.blockelite.cn` port may appear. At the end of the observation period, each exact app-owned SSH PID present in that snapshot must drain within its own 32-second deadline-plus-cleanup margin; later children are deliberately outside that snapshot and do not invalidate it. `ps` sampling is corroborating runtime evidence rather than a deterministic exec audit: if an expected short-lived process is missed, rerun this observer once with the synchronized refresh before diagnosing the app; the exact production probe verifier in Step 3, live configuration in Step 6, and visible four-server data remain mandatory independent gates.
 
 - [ ] **Step 8: Confirm no autostart was added and close the verification gate**
 
