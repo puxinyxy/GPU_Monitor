@@ -296,3 +296,24 @@ func ordinaryProbeFailuresRemainWarningsWithoutOfflineEvents(_ failure: ProbeFai
     #expect(update.stableSnapshot?.gpus.count == 1)
     #expect(update.stableSnapshot?.gpus.first?.index == 0)
 }
+
+@Test func a100BusyAndFreeChangesRequireTwoSamplesAndStayServerScoped() async {
+    let tracker = StateTracker(confirmationCount: 2, offlineFailureCount: 3)
+    func sample(_ occupancy: GPUOccupancy) -> ServerSnapshot {
+        ServerSnapshot(
+            server: .serverA10018200,
+            gpus: [.a100GPU(index: 0, occupancy)],
+            capturedAt: .distantPast
+        )
+    }
+
+    _ = await tracker.recordSuccess(sample(.free))
+    #expect((await tracker.recordSuccess(sample(.busy))).events.isEmpty)
+    #expect((await tracker.recordSuccess(sample(.busy))).events == [
+        .gpuChanged(server: .serverA10018200, gpu: .a100GPU(index: 0, .busy), from: .free, to: .busy),
+    ])
+    #expect((await tracker.recordSuccess(sample(.free))).events.isEmpty)
+    #expect((await tracker.recordSuccess(sample(.free))).events == [
+        .gpuChanged(server: .serverA10018200, gpu: .a100GPU(index: 0, .free), from: .busy, to: .free),
+    ])
+}

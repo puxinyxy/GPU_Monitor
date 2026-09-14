@@ -11,31 +11,40 @@ extension ControlledProbe: GPUProbing {
 
 private actor ConcurrentBarrierProbe: GPUProbing {
     private let results: [String: Result<ServerSnapshot, Error>]
-    private var blockedSample: CheckedContinuation<Void, Never>?
+    private let participantCount: Int
+    private var blockedSamples: [CheckedContinuation<Void, Never>] = []
     private var activeSampleCount = 0
+    private var isReleased = false
     private(set) var maximumConcurrentSampleCount = 0
 
-    init(results: [String: Result<ServerSnapshot, Error>]) {
+    init(results: [String: Result<ServerSnapshot, Error>], participantCount: Int) {
+        precondition(participantCount > 0)
         self.results = results
+        self.participantCount = participantCount
     }
 
     func sample(server: ServerConfig) async throws -> ServerSnapshot {
         activeSampleCount += 1
         maximumConcurrentSampleCount = max(maximumConcurrentSampleCount, activeSampleCount)
 
-        if activeSampleCount == 1 {
-            await withCheckedContinuation { blockedSample = $0 }
-        } else {
-            releaseBlockedSample()
+        if !isReleased {
+            if activeSampleCount == participantCount {
+                releaseBlockedSamples()
+            } else {
+                await withCheckedContinuation { blockedSamples.append($0) }
+            }
         }
 
         activeSampleCount -= 1
         return try results[server.id, default: .failure(ProbeFailure.connectivity)].get()
     }
 
-    func releaseBlockedSample() {
-        blockedSample?.resume()
-        blockedSample = nil
+    func releaseBlockedSamples() {
+        guard !isReleased else { return }
+        isReleased = true
+        let samples = blockedSamples
+        blockedSamples.removeAll()
+        samples.forEach { $0.resume() }
     }
 }
 
@@ -289,25 +298,39 @@ private actor CancellationThenFailureProbe: GPUProbing {
     }
 }
 
-@Test func pollRunsServersConcurrentlyAndPreservesSuccessfulServer() async {
+@Test func pollRunsFourServersConcurrentlyAndIsolatesOneFailure() async {
+    let servers: [ServerConfig] = [.server10122, .server10165, .serverA10018200, .serverA10013000]
     let probe = ConcurrentBarrierProbe(results: [
-        "server-10122": .success(.snapshot(.free, server: .server10122)),
-        "server-10165": .failure(ProbeFailure.connectivity),
-    ])
-    let coordinator = MonitorCoordinator(servers: [.server10122, .server10165], probe: probe)
+        ServerConfig.server10122.id: .success(.snapshot(.free, server: .server10122)),
+        ServerConfig.server10165.id: .success(.snapshot(.busy, server: .server10165)),
+        ServerConfig.serverA10018200.id: .success(ServerSnapshot(
+            server: .serverA10018200,
+            gpus: [.a100GPU(index: 0, .free)],
+            capturedAt: .distantPast
+        )),
+        ServerConfig.serverA10013000.id: .failure(ProbeFailure.connectivity),
+    ], participantCount: servers.count)
+    let coordinator = MonitorCoordinator(servers: servers, probe: probe)
     let deadlockGuard = Task {
         try? await ContinuousClock().sleep(for: .milliseconds(500))
-        await probe.releaseBlockedSample()
+        await probe.releaseBlockedSamples()
     }
 
     let cycle = await coordinator.poll()
     deadlockGuard.cancel()
     await deadlockGuard.value
 
-    #expect(await probe.maximumConcurrentSampleCount == 2)
-    #expect(cycle.snapshots["server-10122"] != nil)
+    #expect(await probe.maximumConcurrentSampleCount == 4)
+    #expect(cycle.snapshots.keys.sorted() == [
+        "server-10122", "server-10165", "server-a100-18200",
+    ])
     #expect(cycle.health["server-10122"] == .online)
-    #expect(cycle.health["server-10165"] != .online)
+    #expect(cycle.health["server-10165"] == .online)
+    #expect(cycle.health["server-a100-18200"] == .online)
+    #expect(cycle.health["server-a100-13000"] == .degraded(
+        message: ProbeFailure.connectivity.localizedDescription,
+        consecutiveFailures: 1
+    ))
 }
 
 @Test func overlappingPollsShareTheActiveCycle() async {

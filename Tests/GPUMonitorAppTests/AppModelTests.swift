@@ -434,6 +434,15 @@ private let server10165 = ServerConfig(
     identityFile: "/tmp/test-key"
 )
 
+private let serverA10018200 = ServerConfig(
+    id: "server-a100-18200", label: "A100 · 18200", host: "js2.blockelite.cn", port: 18200,
+    username: "tester", identityFile: "/tmp/test-key"
+)
+private let serverA10013000 = ServerConfig(
+    id: "server-a100-13000", label: "A100 · 13000", host: "js2.blockelite.cn", port: 13000,
+    username: "tester", identityFile: "/tmp/test-key"
+)
+
 private func gpu(index: Int, busy: Bool) -> GPUSnapshot {
     GPUSnapshot(
         index: index,
@@ -679,6 +688,59 @@ func refreshMergesSnapshotsPreservesOrderAndReportsDeliveryFailure() async {
     #expect(model.snapshots[server10165.id] == updated)
     #expect(model.recentErrorSummary == "通知发送失败：1 条")
     #expect(await notifications.sentEvents.last == [event])
+}
+
+@Test @MainActor
+func fourServerRefreshRetainsFailedSnapshotAndForwardsConfirmedA100Events() async {
+    let servers = [server10122, server10165, serverA10018200, serverA10013000]
+    let initialSnapshots = Dictionary(uniqueKeysWithValues: servers.map {
+        ($0.id, snapshot(server: $0, gpus: [gpu(index: 0, busy: false)]))
+    })
+    let busyA100 = gpu(index: 0, busy: true)
+    let freeA100 = gpu(index: 0, busy: false)
+    let events: [MonitorEvent] = [
+        .gpuChanged(server: serverA10018200, gpu: freeA100, from: .busy, to: .free),
+        .gpuChanged(server: serverA10013000, gpu: busyA100, from: .free, to: .busy),
+    ]
+    let source = CycleSource([
+        cycle(
+            snapshots: initialSnapshots,
+            health: Dictionary(uniqueKeysWithValues: servers.map { ($0.id, ServerHealth.online) })
+        ),
+        cycle(
+            snapshots: [
+                server10122.id: initialSnapshots[server10122.id]!,
+                serverA10018200.id: snapshot(server: serverA10018200, gpus: [freeA100]),
+                serverA10013000.id: snapshot(server: serverA10013000, gpus: [busyA100]),
+            ],
+            health: [
+                server10122.id: .online,
+                server10165.id: .degraded(message: "timed out", consecutiveFailures: 1),
+                serverA10018200.id: .online,
+                serverA10013000.id: .online,
+            ],
+            events: events
+        ),
+    ])
+    let notifications = FakeNotifications()
+    let model = AppModel(
+        servers: servers,
+        poll: { await source.poll() },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { _ in throw CancellationError() }
+    )
+
+    await model.refresh()
+    await model.refresh()
+
+    #expect(model.servers.map(\.id) == servers.map(\.id))
+    #expect(model.snapshots.count == 4)
+    #expect(model.snapshots[server10165.id] == initialSnapshots[server10165.id])
+    #expect(model.health[server10165.id] == .degraded(message: "timed out", consecutiveFailures: 1))
+    #expect(model.menuTitle == "GPU 3/4 空闲")
+    #expect(await notifications.sentEvents == [[], events])
+    await model.stop()
 }
 
 @Test @MainActor

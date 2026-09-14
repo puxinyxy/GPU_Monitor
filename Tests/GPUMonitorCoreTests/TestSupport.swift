@@ -41,6 +41,30 @@ extension GPUSnapshot {
     }
 }
 
+extension ServerConfig {
+    static let serverA10018200 = ServerConfig(
+        id: "server-a100-18200", label: "A100 · 18200", host: "js2.blockelite.cn", port: 18200,
+        username: "yanxiaoyang", identityFile: "/tmp/gpu_monitor_ed25519"
+    )
+
+    static let serverA10013000 = ServerConfig(
+        id: "server-a100-13000", label: "A100 · 13000", host: "js2.blockelite.cn", port: 13000,
+        username: "yanxiaoyang", identityFile: "/tmp/gpu_monitor_ed25519"
+    )
+}
+
+extension GPUSnapshot {
+    static func a100GPU(index: Int, _ occupancy: GPUOccupancy) -> GPUSnapshot {
+        GPUSnapshot(
+            index: index, uuid: "A100-GPU-\(index)", name: "NVIDIA A100-SXM4-80GB",
+            utilizationPercent: occupancy == .free ? 0 : 92,
+            usedMemoryMiB: occupancy == .free ? 0 : 40_960,
+            totalMemoryMiB: 81_920, temperatureCelsius: occupancy == .free ? 34 : 71,
+            processes: occupancy == .free ? [] : [.init(pid: 12345, name: "python", usedMemoryMiB: 40_000)]
+        )
+    }
+}
+
 let validNVIDIAOutput = """
 0, GPU-a, NVIDIA RTX 4090, 0, 120, 24564, 35
 __GPU_MONITOR_PROCESSES__

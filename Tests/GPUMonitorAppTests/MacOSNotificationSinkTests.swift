@@ -261,6 +261,37 @@ private func notificationsNotAllowedError() -> NSError {
     #expect(requests.allSatisfy { $0.playsDefaultSound })
 }
 
+@Test func macOSSinkFormatsA100BusyAndFreeChangesWithConfiguredLabel() async {
+    let center = FakeNotificationCenter()
+    let sink = MacOSNotificationSink(center: center)
+    let server = ServerConfig(
+        id: "server-a100-18200", label: "A100 · 18200", host: "js2.blockelite.cn",
+        port: 18200, username: "tester", identityFile: "/private/test-key"
+    )
+    let free = GPUSnapshot(
+        index: 2, uuid: "GPU-A100", name: "NVIDIA A100-SXM4-80GB", utilizationPercent: 0,
+        usedMemoryMiB: 0, totalMemoryMiB: 81_920, temperatureCelsius: 34, processes: []
+    )
+    let busy = GPUSnapshot(
+        index: 2, uuid: "GPU-A100", name: "NVIDIA A100-SXM4-80GB", utilizationPercent: 92,
+        usedMemoryMiB: 40_960, totalMemoryMiB: 81_920, temperatureCelsius: 71,
+        processes: [.init(pid: 24680, name: "python", usedMemoryMiB: 40_000)]
+    )
+
+    let result = await sink.send(events: [
+        .gpuChanged(server: server, gpu: busy, from: .free, to: .busy),
+        .gpuChanged(server: server, gpu: free, from: .busy, to: .free),
+    ])
+    let requests = await center.recordedRequests
+
+    #expect(result.isSuccess)
+    #expect(requests.map(\.title) == ["GPU 开始占用", "GPU 已空闲"])
+    #expect(requests.map(\.body) == [
+        "服务器 A100 · 18200：GPU 2 开始占用（python，PID 24680）",
+        "服务器 A100 · 18200：GPU 2 已空闲",
+    ])
+}
+
 @Test func macOSSinkReturnsExplicitAuthorizationStates() async {
     let deniedCenter = FakeNotificationCenter(authorizationResult: .success(.denied))
     let deniedSink = MacOSNotificationSink(center: deniedCenter)
