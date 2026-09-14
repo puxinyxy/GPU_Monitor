@@ -80,10 +80,14 @@ GPU 的空闲/占用由是否存在计算进程判断。利用率、显存和温
 专用私钥为 `~/.ssh/gpu_monitor_ed25519`，权限为 `0600`。应用忽略用户 SSH 配置，只使用该身份和专用 `known_hosts`，只允许公钥认证，并清除全部转发。远端 `authorized_keys` 条目禁止 Agent/X11/端口转发、PTY 和用户 rc，并强制执行以下固定只读命令：
 
 ```sh
-nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\n__GPU_MONITOR_PROCESSES__\n' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits
+{ /usr/bin/nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; nvidia_status=$?; if [ $nvidia_status -eq 127 ]; then /lib64/ld-linux-x86-64.so.2 /usr/bin/nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; else (exit $nvidia_status); fi; } && printf '\n__GPU_MONITOR_PROCESSES__\n' && { /usr/bin/nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits; nvidia_status=$?; if [ $nvidia_status -eq 127 ]; then /lib64/ld-linux-x86-64.so.2 /usr/bin/nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits; else (exit $nvidia_status); fi; }
 ```
 
-两条查询与 marker 用 `&&` 串联，任一查询非零都会使采样失败；成功但没有计算进程输出仍是正常的空闲状态。配置脚本会实际请求 `echo SHOULD_NOT_RUN` 并验证转发被拒绝，只有所有安全检查均成功才保留新装的远端行。若本轮新加的精确行未通过后续验证，脚本会重新进行密码认证，只回滚该行并确认它已不存在；相同行若在运行前已经存在则绝不自动删除。回滚失败会失败关闭并给出不含公钥或私钥材料的人工修复提示。
+每条查询先调用绝对路径 `/usr/bin/nvidia-smi`；仅当绝对路径查询精确返回 `127` 时，才以固定 `/lib64/ld-linux-x86-64.so.2` 和完全相同的固定参数重试。其他非零状态不会触发 fallback，也不会被掩盖；loader 重试自身的非零状态同样会传播。命令不读取 `SSH_ORIGINAL_COMMAND` 或其他用户输入，两条查询仍与 marker 用 `&&` 串联。成功但没有计算进程输出仍是正常的空闲状态。
+
+2026-09-14 验收时，`js2.blockelite.cn:13000` 曾出现 `/usr/bin/nvidia-smi` 文件存在且可执行、但 ELF 声明的默认 interpreter 路径不可用的远端运行时兼容现象；固定 loader 对相同只读查询可用。这只是当次环境观察，不把该端点的临时运行状态写成永久属性；上述窄 fallback 同时适用于四个端点，并始终以首次调用的精确退出状态为准。
+
+配置脚本会实际请求 `echo SHOULD_NOT_RUN` 并验证转发被拒绝，只有所有安全检查均成功才保留新装或迁移后的远端行。对相同可信公钥 blob，脚本只会把唯一且精确匹配旧受限行的记录通过 `0600` 临时文件原子迁移为新行；弱限制、未知内容或重复 blob 均失败关闭且不改内容。若本轮新加的精确行未通过后续验证，脚本重新进行密码认证并只删除该行；若本轮从精确旧行迁移，则原子恢复精确旧行；运行前已经是新精确行时绝不自动回滚。任何回滚失败都会失败关闭，并给出不含公钥或私钥材料的人工修复提示。
 
 ## 卸载
 

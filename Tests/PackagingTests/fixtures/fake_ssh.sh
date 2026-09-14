@@ -86,4 +86,11 @@ if [[ "$remote_command" == *'echo SHOULD_NOT_RUN'* ]]; then
     exit 0
 fi
 
+if [[ "${GPU_MONITOR_TEST_FINAL_FAILURE:-0}" == "1" ]]; then
+    call_count=$(/usr/bin/grep -Fc -- '__GPU_MONITOR_SSH_CALL__' "$GPU_MONITOR_TEST_SSH_LOG" || true)
+    if (( call_count % 5 == 0 )); then
+        exit 86
+    fi
+fi
+
 print -r -- "${GPU_MONITOR_TEST_MONITOR_OUTPUT:-}"

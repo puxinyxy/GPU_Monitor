@@ -160,10 +160,17 @@ known_hosts_option="UserKnownHostsFile=$(quote_openssh_config_value "$known_host
 
 authorized_options=$(
     /bin/cat <<'OPTIONS'
+no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="{ /usr/bin/nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; nvidia_status=$?; if [ $nvidia_status -eq 127 ]; then /lib64/ld-linux-x86-64.so.2 /usr/bin/nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; else (exit $nvidia_status); fi; } && printf '\n__GPU_MONITOR_PROCESSES__\n' && { /usr/bin/nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits; nvidia_status=$?; if [ $nvidia_status -eq 127 ]; then /lib64/ld-linux-x86-64.so.2 /usr/bin/nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits; else (exit $nvidia_status); fi; }"
+OPTIONS
+)
+legacy_authorized_options=$(
+    /bin/cat <<'OPTIONS'
 no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\n__GPU_MONITOR_PROCESSES__\n' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits"
 OPTIONS
 )
 authorized_line="$authorized_options $canonical_public_key"
+legacy_authorized_line="$legacy_authorized_options $canonical_public_key"
+[[ "$authorized_line" != "$legacy_authorized_line" ]] || fail "the restricted-key migration definitions unexpectedly match"
 
 remote_installer=$( /bin/cat <<'REMOTE_SCRIPT'
 set -eu
@@ -174,9 +181,6 @@ mkdir -p "$ssh_dir"
 chmod 700 "$ssh_dir"
 touch "$authorized_keys"
 chmod 600 "$authorized_keys"
-if [ -s "$authorized_keys" ] && [ -n "$(tail -c 1 "$authorized_keys")" ]; then
-    printf '\n' >> "$authorized_keys"
-fi
 blob_count=$(awk -v blob="$key_blob" '
     {
         for (field = 1; field <= NF; field++) {
@@ -188,17 +192,66 @@ blob_count=$(awk -v blob="$key_blob" '
     }
     END { print count + 0 }
 ' "$authorized_keys")
-exact_count=0
+new_exact_count=0
+legacy_exact_count=0
 while IFS= read -r line || [ -n "$line" ]; do
     if [ "$line" = "$authorized_line" ]; then
-        exact_count=$((exact_count + 1))
+        new_exact_count=$((new_exact_count + 1))
+    fi
+    if [ "$line" = "$legacy_authorized_line" ]; then
+        legacy_exact_count=$((legacy_exact_count + 1))
     fi
 done < "$authorized_keys"
 if [ "$blob_count" -eq 0 ]; then
+    if [ -s "$authorized_keys" ] && [ -n "$(tail -c 1 "$authorized_keys")" ]; then
+        printf '\n' >> "$authorized_keys"
+    fi
     printf '%s\n' "$authorized_line" >> "$authorized_keys"
     printf '%s\n' 'newly-installed'
-elif [ "$blob_count" -eq 1 ] && [ "$exact_count" -eq 1 ]; then
+elif [ "$blob_count" -eq 1 ] && [ "$new_exact_count" -eq 1 ] && [ "$legacy_exact_count" -eq 0 ]; then
     printf '%s\n' 'already-present'
+elif [ "$blob_count" -eq 1 ] && [ "$new_exact_count" -eq 0 ] && [ "$legacy_exact_count" -eq 1 ]; then
+    migration_file=$(mktemp "$ssh_dir/.gpu-monitor-authorized-keys-migrate.XXXXXX") || exit 1
+    trap 'rm -f "$migration_file"' EXIT HUP INT TERM
+    replaced=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$replaced" -eq 0 ] && [ "$line" = "$legacy_authorized_line" ]; then
+            printf '%s\n' "$authorized_line" >> "$migration_file"
+            replaced=1
+        else
+            printf '%s\n' "$line" >> "$migration_file"
+        fi
+    done < "$authorized_keys"
+    [ "$replaced" -eq 1 ] || exit 1
+
+    candidate_blob_count=$(awk -v blob="$key_blob" '
+        {
+            for (field = 1; field <= NF; field++) {
+                if ($field == blob) {
+                    count++
+                    break
+                }
+            }
+        }
+        END { print count + 0 }
+    ' "$migration_file")
+    candidate_new_exact_count=0
+    candidate_legacy_exact_count=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$line" = "$authorized_line" ]; then
+            candidate_new_exact_count=$((candidate_new_exact_count + 1))
+        fi
+        if [ "$line" = "$legacy_authorized_line" ]; then
+            candidate_legacy_exact_count=$((candidate_legacy_exact_count + 1))
+        fi
+    done < "$migration_file"
+    [ "$candidate_blob_count" -eq 1 ] &&
+        [ "$candidate_new_exact_count" -eq 1 ] &&
+        [ "$candidate_legacy_exact_count" -eq 0 ] || exit 1
+    chmod 600 "$migration_file"
+    mv "$migration_file" "$authorized_keys"
+    trap - EXIT HUP INT TERM
+    printf '%s\n' 'migrated'
 else
     printf '%s\n' 'Existing authorized_keys entries for this key are not uniquely and exactly restricted.' >&2
     exit 1
@@ -212,6 +265,10 @@ umask 077
 ssh_dir="$HOME/.ssh"
 authorized_keys="$ssh_dir/authorized_keys"
 [ -f "$authorized_keys" ] || exit 1
+case "$rollback_action" in
+    remove-new|restore-legacy) ;;
+    *) exit 1 ;;
+esac
 blob_count=$(awk -v blob="$key_blob" '
     {
         for (field = 1; field <= NF; field++) {
@@ -223,13 +280,19 @@ blob_count=$(awk -v blob="$key_blob" '
     }
     END { print count + 0 }
 ' "$authorized_keys")
-exact_count=0
+new_exact_count=0
+legacy_exact_count=0
 while IFS= read -r line || [ -n "$line" ]; do
     if [ "$line" = "$authorized_line" ]; then
-        exact_count=$((exact_count + 1))
+        new_exact_count=$((new_exact_count + 1))
+    fi
+    if [ "$line" = "$legacy_authorized_line" ]; then
+        legacy_exact_count=$((legacy_exact_count + 1))
     fi
 done < "$authorized_keys"
-[ "$blob_count" -eq 1 ] && [ "$exact_count" -eq 1 ] || exit 1
+[ "$blob_count" -eq 1 ] &&
+    [ "$new_exact_count" -eq 1 ] &&
+    [ "$legacy_exact_count" -eq 0 ] || exit 1
 
 rollback_file=$(mktemp "$ssh_dir/.gpu-monitor-authorized-keys-rollback.XXXXXX") || exit 1
 trap 'rm -f "$rollback_file"' EXIT HUP INT TERM
@@ -237,34 +300,59 @@ removed=0
 while IFS= read -r line || [ -n "$line" ]; do
     if [ "$removed" -eq 0 ] && [ "$line" = "$authorized_line" ]; then
         removed=1
+        if [ "$rollback_action" = "restore-legacy" ]; then
+            printf '%s\n' "$legacy_authorized_line" >> "$rollback_file"
+        fi
         continue
     fi
     printf '%s\n' "$line" >> "$rollback_file"
 done < "$authorized_keys"
 [ "$removed" -eq 1 ] || exit 1
+candidate_blob_count=$(awk -v blob="$key_blob" '
+    {
+        for (field = 1; field <= NF; field++) {
+            if ($field == blob) {
+                count++
+                break
+            }
+        }
+    }
+    END { print count + 0 }
+' "$rollback_file")
+candidate_new_exact_count=0
+candidate_legacy_exact_count=0
+while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "$authorized_line" ]; then
+        candidate_new_exact_count=$((candidate_new_exact_count + 1))
+    fi
+    if [ "$line" = "$legacy_authorized_line" ]; then
+        candidate_legacy_exact_count=$((candidate_legacy_exact_count + 1))
+    fi
+done < "$rollback_file"
+[ "$candidate_new_exact_count" -eq 0 ] || exit 1
+if [ "$rollback_action" = "remove-new" ]; then
+    [ "$candidate_blob_count" -eq 0 ] && [ "$candidate_legacy_exact_count" -eq 0 ] || exit 1
+else
+    [ "$candidate_blob_count" -eq 1 ] && [ "$candidate_legacy_exact_count" -eq 1 ] || exit 1
+fi
 chmod 600 "$rollback_file"
 mv "$rollback_file" "$authorized_keys"
 trap - EXIT HUP INT TERM
-
-post_exact_count=0
-while IFS= read -r line || [ -n "$line" ]; do
-    if [ "$line" = "$authorized_line" ]; then
-        post_exact_count=$((post_exact_count + 1))
-    fi
-done < "$authorized_keys"
-[ "$post_exact_count" -eq 0 ] || exit 1
 printf '%s\n' 'rolled-back'
 REMOTE_SCRIPT
 )
 
-rollback_new_key() {
+rollback_restricted_key() {
     local port=$1
     local destination=$2
+    local rollback_action=$3
     local rollback_status
 
     rollback_status=$({
         print -r -- "$key_blob"
         print -r -- "$authorized_line"
+        print -r -- "$legacy_authorized_line"
+        print -r -- "$rollback_action"
         print -r -- "$remote_rollback"
     } | LC_ALL=C "$ssh_bin" \
         -T \
@@ -276,7 +364,7 @@ rollback_new_key() {
         -o StrictHostKeyChecking=yes \
         -o "$known_hosts_option" \
         "$destination" \
-        'IFS= read -r key_blob; IFS= read -r authorized_line; export key_blob authorized_line; /bin/sh -s -- rollback') || return 1
+        'IFS= read -r key_blob; IFS= read -r authorized_line; IFS= read -r legacy_authorized_line; IFS= read -r rollback_action; export key_blob authorized_line legacy_authorized_line rollback_action; /bin/sh -s -- rollback') || return 1
     [[ "$rollback_status" == "rolled-back" ]]
 }
 
@@ -284,13 +372,21 @@ fail_after_verification() {
     local message=$1
     local port=$2
     local destination=$3
-    local key_was_newly_added=$4
+    local rollback_action=$4
 
-    if (( key_was_newly_added )); then
-        print -u2 "Security verification failed for port $port; rolling back the newly installed restricted key."
-        if ! rollback_new_key "$port" "$destination"; then
+    if [[ "$rollback_action" != "none" ]]; then
+        if [[ "$rollback_action" == "remove-new" ]]; then
+            print -u2 "Security verification failed for port $port; rolling back the newly installed restricted key."
+        else
+            print -u2 "Security verification failed for port $port; restoring the previous exact restricted key."
+        fi
+        if ! rollback_restricted_key "$port" "$destination" "$rollback_action"; then
             print -u2 "Provisioning failed: $message"
-            print -u2 "Automatic rollback failed for port $port. Manual remediation required: remove the GPU Monitor restricted authorized_keys entry on that server before retrying."
+            if [[ "$rollback_action" == "remove-new" ]]; then
+                print -u2 "Automatic rollback failed for port $port. Manual remediation required: remove the GPU Monitor restricted authorized_keys entry on that server before retrying."
+            else
+                print -u2 "Automatic rollback failed for port $port. Manual remediation required: restore the prior exact GPU Monitor restricted authorized_keys entry on that server before retrying."
+            fi
             exit 1
         fi
     fi
@@ -309,6 +405,7 @@ for endpoint_spec in "${endpoint_specs[@]}"; do
     installation_status=$({
         print -r -- "$key_blob"
         print -r -- "$authorized_line"
+        print -r -- "$legacy_authorized_line"
         print -r -- "$remote_installer"
     } | LC_ALL=C "$ssh_bin" \
         -T \
@@ -320,11 +417,12 @@ for endpoint_spec in "${endpoint_specs[@]}"; do
         -o StrictHostKeyChecking=accept-new \
         -o "$known_hosts_option" \
         "$destination" \
-        'IFS= read -r key_blob; IFS= read -r authorized_line; export key_blob authorized_line; /bin/sh -s') ||
+        'IFS= read -r key_blob; IFS= read -r authorized_line; IFS= read -r legacy_authorized_line; export key_blob authorized_line legacy_authorized_line; /bin/sh -s') ||
         fail "could not install the restricted key for port $port"
     case "$installation_status" in
-        newly-installed) key_was_newly_added=1 ;;
-        already-present) key_was_newly_added=0 ;;
+        newly-installed) rollback_action=remove-new ;;
+        migrated) rollback_action=restore-legacy ;;
+        already-present) rollback_action=none ;;
         *) fail "the remote key installation result was invalid for port $port" ;;
     esac
 
@@ -334,10 +432,10 @@ for endpoint_spec in "${endpoint_specs[@]}"; do
             /usr/bin/ssh-keygen -lf -
     ) || fail_after_verification \
         "could not read the learned host fingerprint for port $port" \
-        "$port" "$destination" "$key_was_newly_added"
+        "$port" "$destination" "$rollback_action"
     [[ -n "$fingerprints" ]] || fail_after_verification \
         "no learned host fingerprint found for port $port" \
-        "$port" "$destination" "$key_was_newly_added"
+        "$port" "$destination" "$rollback_action"
     print "Learned host fingerprint for $host_token:"
     print -r -- "$fingerprints"
 
@@ -354,23 +452,23 @@ for endpoint_spec in "${endpoint_specs[@]}"; do
 
     sample_output=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" "$destination") ||
         fail_after_verification "restricted-key sample failed for port $port" \
-            "$port" "$destination" "$key_was_newly_added"
+            "$port" "$destination" "$rollback_action"
     validate_monitor_output "$sample_output" ||
         fail_after_verification \
             "restricted-key sample was not valid monitor output on port $port" \
-            "$port" "$destination" "$key_was_newly_added"
+            "$port" "$destination" "$rollback_action"
 
     forced_output=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" "$destination" 'echo SHOULD_NOT_RUN') ||
         fail_after_verification "forced-command verification failed for port $port" \
-            "$port" "$destination" "$key_was_newly_added"
+            "$port" "$destination" "$rollback_action"
     if [[ "$forced_output" == *SHOULD_NOT_RUN* ]]; then
         fail_after_verification "the requested shell command ran on port $port" \
-            "$port" "$destination" "$key_was_newly_added"
+            "$port" "$destination" "$rollback_action"
     fi
     validate_monitor_output "$forced_output" ||
         fail_after_verification \
             "the forced command did not return valid monitor output on port $port" \
-            "$port" "$destination" "$key_was_newly_added"
+            "$port" "$destination" "$rollback_action"
 
     forwarding_stderr=""
     if forwarding_stderr=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" \
@@ -379,7 +477,7 @@ for endpoint_spec in "${endpoint_specs[@]}"; do
         "$destination" true 2>&1 >/dev/null); then
         fail_after_verification \
             "the restricted key unexpectedly allowed remote port forwarding on port $port" \
-            "$port" "$destination" "$key_was_newly_added"
+            "$port" "$destination" "$rollback_action"
     else
         forwarding_status=$?
     fi
@@ -387,7 +485,7 @@ for endpoint_spec in "${endpoint_specs[@]}"; do
     if (( forwarding_status != 255 )); then
         fail_after_verification \
             "could not prove that the server explicitly rejected remote port forwarding on port $port" \
-            "$port" "$destination" "$key_was_newly_added"
+            "$port" "$destination" "$rollback_action"
     fi
     case "$forwarding_stderr" in
         'remote port forwarding failed for listen port 0'|'Error: remote port forwarding failed for listen port 0'|'Warning: remote port forwarding failed for listen port 0')
@@ -395,17 +493,17 @@ for endpoint_spec in "${endpoint_specs[@]}"; do
         *)
             fail_after_verification \
                 "could not prove that the server explicitly rejected remote port forwarding on port $port" \
-                "$port" "$destination" "$key_was_newly_added"
+                "$port" "$destination" "$rollback_action"
             ;;
     esac
 
     final_output=$(LC_ALL=C "$ssh_bin" "${ssh_options[@]}" "$destination") ||
         fail_after_verification "final restricted-key validation failed for port $port" \
-            "$port" "$destination" "$key_was_newly_added"
+            "$port" "$destination" "$rollback_action"
     validate_monitor_output "$final_output" ||
         fail_after_verification \
             "final restricted-key validation was not valid monitor output on port $port" \
-            "$port" "$destination" "$key_was_newly_added"
+            "$port" "$destination" "$rollback_action"
     print "Restricted key and forced command verified for port $port."
 done
 

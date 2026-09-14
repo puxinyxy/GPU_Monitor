@@ -5,18 +5,24 @@ project_dir=${0:A:h:h:h}
 production_provisioner="$project_dir/scripts/provision_ssh.sh"
 fake_ssh="$project_dir/Tests/PackagingTests/fixtures/fake_ssh.sh"
 fake_nvidia_smi="$project_dir/Tests/PackagingTests/fixtures/fake_nvidia_smi.sh"
+fake_nvidia_loader="$project_dir/Tests/PackagingTests/fixtures/fake_nvidia_loader.sh"
 test_root=$(/usr/bin/mktemp -d "${TMPDIR%/}/gpu-monitor-provision-tests.XXXXXX")
 provisioner="$test_root/instrumented-provision_ssh.sh"
 failures=0
 valid_output=$'0, GPU-1234, Test GPU, 0, 12, 24576, 35\n\n__GPU_MONITOR_PROCESSES__\n'
 restrictions='no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding'
 authorized_options_line=$(/usr/bin/awk '/^no-agent-forwarding,.*command="/ { print; exit }' "$production_provisioner")
-forced_command="${authorized_options_line#*command=\"}"
-forced_command="${forced_command%\"}"
-[[ -n "$forced_command" && "$forced_command" != "$authorized_options_line" ]] || {
+production_forced_command="${authorized_options_line#*command=\"}"
+production_forced_command="${production_forced_command%\"}"
+[[ -n "$production_forced_command" && "$production_forced_command" != "$authorized_options_line" ]] || {
     print -u2 "FAIL: could not extract the production forced command"
     exit 1
 }
+legacy_forced_command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\\n__GPU_MONITOR_PROCESSES__\\n' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits"
+forced_command_bin="$test_root/forced-command-bin"
+forced_command=$(print -r -- "$production_forced_command" | /usr/bin/sed \
+    -e "s|/lib64/ld-linux-x86-64.so.2|$fake_nvidia_loader|g" \
+    -e "s|/usr/bin/nvidia-smi|$forced_command_bin/nvidia-smi|g")
 
 assignment_count=$(/usr/bin/grep -Fxc -- 'ssh_bin="/usr/bin/ssh"' "$production_provisioner" || true)
 if [[ "$assignment_count" != "1" ]]; then
@@ -38,10 +44,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-forced_command_bin="$test_root/forced-command-bin"
 /bin/mkdir -p "$forced_command_bin"
 /bin/cp "$fake_nvidia_smi" "$forced_command_bin/nvidia-smi"
 /bin/chmod 755 "$forced_command_bin/nvidia-smi"
+forced_command_log="$test_root/forced-command.log"
+: > "$forced_command_log"
 
 record_failure() {
     print -u2 "FAIL: $1"
@@ -56,29 +63,78 @@ run_forced_command() {
     /usr/bin/env \
         PATH="$forced_command_bin:/usr/bin:/bin" \
         GPU_MONITOR_TEST_GPU_STATUS="${gpu_query_status:-0}" \
+        GPU_MONITOR_TEST_GPU_LOADER_STATUS="${gpu_loader_status:-0}" \
+        GPU_MONITOR_TEST_GPU_LOADER_OUTPUT="${gpu_loader_output:-0, GPU-test-loader, Test GPU Loader, 0, 0, 100, 30}" \
         GPU_MONITOR_TEST_COMPUTE_STATUS="${compute_query_status:-0}" \
+        GPU_MONITOR_TEST_COMPUTE_LOADER_STATUS="${compute_loader_status:-0}" \
+        GPU_MONITOR_TEST_COMPUTE_LOADER_OUTPUT="${compute_loader_output:-}" \
+        GPU_MONITOR_TEST_NVIDIA_LOG="$forced_command_log" \
         /bin/sh -c "$forced_command"
 }
 
-gpu_query_status=17
-if forced_output=$(run_forced_command 2>&1); then
-    record_failure "GPU query failure makes the forced command fail"
-elif [[ "$?" != "17" || "$forced_output" == *"__GPU_MONITOR_PROCESSES__"* ]]; then
-    record_failure "GPU query failure is propagated before the marker"
+if [[ "$production_forced_command" == "$legacy_forced_command" ]]; then
+    record_failure "production forced command replaces the exact legacy command"
 else
-    record_pass "GPU query failure is propagated before the marker"
+    record_pass "production forced command replaces the exact legacy command"
 fi
-unset gpu_query_status
 
-compute_query_status=23
-if forced_output=$(run_forced_command 2>&1); then
-    record_failure "compute query failure makes the forced command fail"
-elif [[ "$?" != "23" || "$forced_output" != *"__GPU_MONITOR_PROCESSES__"* ]]; then
-    record_failure "compute query failure is propagated after the marker"
+: > "$forced_command_log"
+gpu_query_status=127
+gpu_loader_status=0
+if forced_output=$(run_forced_command 2>&1) &&
+    [[ "$forced_output" == 0,* ]] &&
+    [[ "$(<"$forced_command_log")" == $'direct:gpu\nloader:gpu\ndirect:compute' ]]; then
+    record_pass "GPU query status 127 retries once through the fixed loader"
 else
-    record_pass "compute query failure is propagated after the marker"
+    record_failure "GPU query status 127 retries once through the fixed loader"
 fi
-unset compute_query_status
+unset gpu_query_status gpu_loader_status
+
+: > "$forced_command_log"
+gpu_query_status=17
+forced_status=0
+if forced_output=$(run_forced_command 2>&1); then
+    forced_status=0
+else
+    forced_status=$?
+fi
+if [[ "$forced_status" == "17" ]] &&
+    [[ "$forced_output" != *"__GPU_MONITOR_PROCESSES__"* ]] &&
+    [[ "$(<"$forced_command_log")" == 'direct:gpu' ]]; then
+    record_pass "non-127 GPU query failure is propagated without loader fallback"
+else
+    record_failure "non-127 GPU query failure is propagated without loader fallback"
+fi
+unset gpu_query_status forced_status
+
+: > "$forced_command_log"
+compute_query_status=127
+compute_loader_status=0
+if forced_output=$(run_forced_command 2>&1) &&
+    [[ "$forced_output" == *"__GPU_MONITOR_PROCESSES__"* ]] &&
+    [[ "$(<"$forced_command_log")" == $'direct:gpu\ndirect:compute\nloader:compute' ]]; then
+    record_pass "compute query status 127 retries once through the fixed loader"
+else
+    record_failure "compute query status 127 retries once through the fixed loader"
+fi
+unset compute_query_status compute_loader_status
+
+: > "$forced_command_log"
+compute_query_status=23
+forced_status=0
+if forced_output=$(run_forced_command 2>&1); then
+    forced_status=0
+else
+    forced_status=$?
+fi
+if [[ "$forced_status" == "23" ]] &&
+    [[ "$forced_output" == *"__GPU_MONITOR_PROCESSES__"* ]] &&
+    [[ "$(<"$forced_command_log")" == $'direct:gpu\ndirect:compute' ]]; then
+    record_pass "non-127 compute query failure is propagated without loader fallback"
+else
+    record_failure "non-127 compute query failure is propagated without loader fallback"
+fi
+unset compute_query_status forced_status
 
 if forced_output=$(run_forced_command 2>&1) &&
     [[ "$forced_output" == 0,* ]] &&
@@ -123,7 +179,8 @@ trusted_public_parts() {
     trusted_type="${derived%% *}"
     local remainder="${derived#* }"
     trusted_blob="${remainder%% *}"
-    expected_authorized_line="$restrictions,command=\"$forced_command\" $trusted_type $trusted_blob gpu-monitor-restricted"
+    expected_authorized_line="$restrictions,command=\"$production_forced_command\" $trusted_type $trusted_blob gpu-monitor-restricted"
+    legacy_authorized_line="$restrictions,command=\"$legacy_forced_command\" $trusted_type $trusted_blob gpu-monitor-restricted"
 }
 
 run_provisioner() {
@@ -140,12 +197,18 @@ run_provisioner() {
         GPU_MONITOR_TEST_FORWARD_STYLE="${forward_style:-error}" \
         GPU_MONITOR_TEST_FORWARD_MULTILINE="${forward_multiline:-0}" \
         GPU_MONITOR_TEST_FORCED_FAILURE="${forced_verification_failure:-0}" \
+        GPU_MONITOR_TEST_FINAL_FAILURE="${final_verification_failure:-0}" \
         GPU_MONITOR_TEST_ROLLBACK_FAILURE="${rollback_failure:-0}" \
         "$provisioner" >"$stdout_log" 2>"$stderr_log"
 }
 
 rollback_call_count() {
     /usr/bin/grep -Fc -- '/bin/sh -s -- rollback' "$ssh_log" || true
+}
+
+restricted_temp_count() {
+    /usr/bin/find "$remote_home/.ssh" -maxdepth 1 -type f \
+        -name '.gpu-monitor-authorized-keys-*' | /usr/bin/wc -l | /usr/bin/tr -d ' '
 }
 
 logged_ssh_calls_use_quoted_known_hosts() {
@@ -303,6 +366,130 @@ if run_provisioner; then
 else
     record_pass "tab-separated weak matching blob fails closed"
 fi
+
+new_case unknown_matching_blob_without_newline
+prepare_identity
+trusted_public_parts
+unknown_line="$restrictions,command=\"/bin/false\" $trusted_type $trusted_blob gpu-monitor-restricted"
+print -rn -- "$unknown_line" > "$remote_home/.ssh/authorized_keys"
+/bin/chmod 600 "$remote_home/.ssh/authorized_keys"
+/bin/cp "$remote_home/.ssh/authorized_keys" "$case_root/authorized_keys.before"
+if run_provisioner; then
+    record_failure "unknown matching blob fails closed without changing authorized_keys"
+elif /usr/bin/cmp -s "$case_root/authorized_keys.before" "$remote_home/.ssh/authorized_keys" &&
+    [[ "$(rollback_call_count)" == "0" ]]; then
+    record_pass "unknown matching blob fails closed without changing authorized_keys"
+else
+    record_failure "unknown matching blob fails closed without changing authorized_keys"
+fi
+
+new_case duplicate_legacy_entries
+prepare_identity
+trusted_public_parts
+{
+    print -r -- "$legacy_authorized_line"
+    print -r -- "$legacy_authorized_line"
+} > "$remote_home/.ssh/authorized_keys"
+/bin/cp "$remote_home/.ssh/authorized_keys" "$case_root/authorized_keys.before"
+if run_provisioner; then
+    record_failure "duplicate exact legacy entries fail closed without migration"
+elif /usr/bin/cmp -s "$case_root/authorized_keys.before" "$remote_home/.ssh/authorized_keys" &&
+    [[ "$(rollback_call_count)" == "0" ]]; then
+    record_pass "duplicate exact legacy entries fail closed without migration"
+else
+    record_failure "duplicate exact legacy entries fail closed without migration"
+fi
+
+new_case exact_legacy_migrates_atomically_and_idempotently
+prepare_identity
+trusted_public_parts
+{
+    print -r -- 'ssh-ed25519 unrelated-key-before unrelated-before'
+    print -r -- "$legacy_authorized_line"
+    print -r -- 'ssh-ed25519 unrelated-key-after unrelated-after'
+} > "$remote_home/.ssh/authorized_keys"
+if run_provisioner && run_provisioner; then
+    new_count=$(/usr/bin/grep -Fxc -- "$expected_authorized_line" "$remote_home/.ssh/authorized_keys" || true)
+    legacy_count=$(/usr/bin/grep -Fxc -- "$legacy_authorized_line" "$remote_home/.ssh/authorized_keys" || true)
+    total_lines=$(/usr/bin/wc -l < "$remote_home/.ssh/authorized_keys" | /usr/bin/tr -d ' ')
+    file_mode=$(/usr/bin/stat -f '%Lp' "$remote_home/.ssh/authorized_keys")
+    if [[ "$new_count" == "1" && "$legacy_count" == "0" && "$total_lines" == "3" &&
+          "$file_mode" == "600" && "$(restricted_temp_count)" == "0" &&
+          "$(rollback_call_count)" == "0" ]]; then
+        record_pass "one exact legacy entry migrates atomically and a second run is idempotent"
+    else
+        record_failure "one exact legacy entry migrates atomically and a second run is idempotent"
+    fi
+else
+    record_failure "one exact legacy entry migrates atomically and a second run is idempotent (provisioner failed: $(<"$stderr_log"))"
+fi
+
+new_case migrated_forced_failure_restores_legacy
+prepare_identity
+trusted_public_parts
+print -r -- "$legacy_authorized_line" > "$remote_home/.ssh/authorized_keys"
+forced_verification_failure=1
+if run_provisioner; then
+    record_failure "migrated entry restores exact legacy after forced-command verification failure"
+elif [[ "$(<"$remote_home/.ssh/authorized_keys")" == "$legacy_authorized_line" &&
+        "$(rollback_call_count)" == "1" && "$(restricted_temp_count)" == "0" ]]; then
+    record_pass "migrated entry restores exact legacy after forced-command verification failure"
+else
+    record_failure "migrated entry restores exact legacy after forced-command verification failure"
+fi
+unset forced_verification_failure
+
+new_case migrated_forwarding_failure_restores_legacy
+prepare_identity
+trusted_public_parts
+print -r -- "$legacy_authorized_line" > "$remote_home/.ssh/authorized_keys"
+forward_unrelated_failure=1
+if run_provisioner; then
+    record_failure "migrated entry restores exact legacy after forwarding verification failure"
+elif [[ "$(<"$remote_home/.ssh/authorized_keys")" == "$legacy_authorized_line" &&
+        "$(rollback_call_count)" == "1" && "$(restricted_temp_count)" == "0" ]]; then
+    record_pass "migrated entry restores exact legacy after forwarding verification failure"
+else
+    record_failure "migrated entry restores exact legacy after forwarding verification failure"
+fi
+unset forward_unrelated_failure
+
+new_case migrated_final_failure_restores_legacy
+prepare_identity
+trusted_public_parts
+print -r -- "$legacy_authorized_line" > "$remote_home/.ssh/authorized_keys"
+final_verification_failure=1
+if run_provisioner; then
+    record_failure "migrated entry restores exact legacy after final verification failure"
+elif [[ "$(<"$remote_home/.ssh/authorized_keys")" == "$legacy_authorized_line" &&
+        "$(rollback_call_count)" == "1" && "$(restricted_temp_count)" == "0" ]]; then
+    record_pass "migrated entry restores exact legacy after final verification failure"
+else
+    record_failure "migrated entry restores exact legacy after final verification failure"
+fi
+unset final_verification_failure
+
+new_case migrated_rollback_failure_fails_closed
+prepare_identity
+trusted_public_parts
+print -r -- "$legacy_authorized_line" > "$remote_home/.ssh/authorized_keys"
+forced_verification_failure=1
+rollback_failure=1
+if run_provisioner; then
+    record_failure "migration rollback failure fails closed with sanitized remediation"
+else
+    new_count=$(/usr/bin/grep -Fxc -- "$expected_authorized_line" "$remote_home/.ssh/authorized_keys" || true)
+    legacy_count=$(/usr/bin/grep -Fxc -- "$legacy_authorized_line" "$remote_home/.ssh/authorized_keys" || true)
+    if [[ "$new_count" == "1" && "$legacy_count" == "0" &&
+          "$(rollback_call_count)" == "1" &&
+          "$(<"$stderr_log")" == *"Manual remediation required"* ]] &&
+        ! /usr/bin/grep -Fq -- "$trusted_blob" "$stderr_log"; then
+        record_pass "migration rollback failure fails closed with sanitized remediation"
+    else
+        record_failure "migration rollback failure fails closed with sanitized remediation"
+    fi
+fi
+unset forced_verification_failure rollback_failure
 
 new_case marker_only
 monitor_output=$'\n__GPU_MONITOR_PROCESSES__\n'

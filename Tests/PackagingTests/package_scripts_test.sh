@@ -94,6 +94,8 @@ install_behavior_test="$project_dir/Tests/PackagingTests/install_app_behavior_te
 implementation_plan="$project_dir/docs/superpowers/plans/2026-08-24-gpu-monitor-implementation.md"
 fallback_plan="$project_dir/docs/superpowers/plans/2026-08-24-notification-compatibility-fallback-implementation.md"
 design_spec="$project_dir/docs/superpowers/specs/2026-08-24-gpu-monitor-design.md"
+four_server_plan="$project_dir/docs/superpowers/plans/2026-09-14-four-server-gpu-monitor-implementation.md"
+four_server_design="$project_dir/docs/superpowers/specs/2026-09-14-four-server-gpu-monitor-design.md"
 stale_first_port='102''22'
 
 check "package script uses exact app path guard" file_contains "$package_script" '[[ "$app_dir" == "$project_dir/dist/GPU Monitor.app" ]] || exit 2'
@@ -159,8 +161,14 @@ check "offline installer behavior harness exists" test -f "$install_behavior_tes
 check "offline installer harness has a temp-root safety guard" file_contains "$install_behavior_test" 'gpu-monitor-install-test.'
 check "offline installer harness traps cleanup" file_contains "$install_behavior_test" 'trap cleanup EXIT INT TERM'
 
-forced_command='command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\''\n__GPU_MONITOR_PROCESSES__\n'\'' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits"'
+legacy_forced_command='command="nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits && printf '\''\n__GPU_MONITOR_PROCESSES__\n'\'' && nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits"'
+forced_command='command="{ /usr/bin/nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; nvidia_status=$?; if [ $nvidia_status -eq 127 ]; then /lib64/ld-linux-x86-64.so.2 /usr/bin/nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits; else (exit $nvidia_status); fi; } && printf '\''\n__GPU_MONITOR_PROCESSES__\n'\'' && { /usr/bin/nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits; nvidia_status=$?; if [ $nvidia_status -eq 127 ]; then /lib64/ld-linux-x86-64.so.2 /usr/bin/nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory --format=csv,noheader,nounits; else (exit $nvidia_status); fi; }"'
 check "provisioner installs the exact forced command" file_contains "$provision_script" "$forced_command"
+check "provisioner retains the exact legacy command only for migration" file_contains "$provision_script" "$legacy_forced_command"
+check "forced command uses the absolute nvidia-smi path" file_contains "$provision_script" '/usr/bin/nvidia-smi --query-gpu='
+check "forced command fallback uses the fixed ELF loader" file_contains "$provision_script" '/lib64/ld-linux-x86-64.so.2 /usr/bin/nvidia-smi'
+check "forced command fallback is limited to status 127" file_contains "$provision_script" 'if [ $nvidia_status -eq 127 ]'
+check "forced command does not inspect the requested SSH command" file_not_contains "$provision_script" 'SSH_ORIGINAL_COMMAND'
 check "forced command never masks query failures" file_not_contains "$provision_script" '|| true"'
 check "provisioner allows no command-line arguments" file_contains "$provision_script" '[[ $# -eq 0 ]]'
 check "provisioner defaults to the absolute system SSH" file_contains "$provision_script" 'ssh_bin="/usr/bin/ssh"'
@@ -192,12 +200,16 @@ check "forced-command test requests a forbidden shell command" file_contains "$p
 check "forced-command test fails on forbidden output" file_contains "$provision_script" '*SHOULD_NOT_RUN*'
 check "authorized_keys installation counts exact matching lines" file_contains "$provision_script" 'exact_count'
 check "authorized_keys installation counts all matching blobs" file_contains "$provision_script" 'blob_count'
+check "authorized_keys migration records an exact legacy match" file_contains "$provision_script" 'legacy_exact_count'
+check "authorized_keys migration uses a guarded temporary file" file_contains "$provision_script" '.gpu-monitor-authorized-keys-migrate.XXXXXX'
+check "authorized_keys migration reports its distinct state" file_contains "$provision_script" "printf '%s\\n' 'migrated'"
 check "provisioner records when the exact line was newly installed" file_contains "$provision_script" "printf '%s\\n' 'newly-installed'"
-check "provisioner tracks the newly installed line per server" file_contains "$provision_script" 'key_was_newly_added=1'
+check "provisioner tracks newly installed lines for removal" file_contains "$provision_script" 'newly-installed) rollback_action=remove-new'
+check "provisioner tracks migrated lines for restoration" file_contains "$provision_script" 'restore-legacy'
 check "provisioner password-authenticates without a stored password" file_contains "$provision_script" '-o PreferredAuthentications=password'
 check "provisioner rollback uses a distinct guarded remote operation" file_contains "$provision_script" '/bin/sh -s -- rollback'
 check "provisioner rollback matches only the exact authorized line" file_contains "$provision_script" '[ "$line" = "$authorized_line" ]'
-check "provisioner verifies the exact line is absent after rollback" file_contains "$provision_script" '[ "$post_exact_count" -eq 0 ]'
+check "provisioner verifies the new line is absent from the rollback candidate" file_contains "$provision_script" '[ "$candidate_new_exact_count" -eq 0 ]'
 check "provisioner reports sanitized manual remediation on rollback failure" file_contains "$provision_script" 'Manual remediation required: remove the GPU Monitor restricted authorized_keys entry'
 check "provisioner never deletes authorized_keys" file_not_contains "$provision_script" 'rm -f "$authorized_keys"'
 check "provisioner never recursively deletes authorized_keys" file_not_contains "$provision_script" 'rm -rf "$authorized_keys"'
@@ -224,6 +236,8 @@ check "README has strict concurrency verification" file_contains "$readme" '-str
 check "README has exact package command" file_contains "$readme" './scripts/package_app.sh'
 check "README has exact install command" file_contains "$readme" './scripts/install_app.sh'
 check "README documents no login-item setup" file_contains "$readme" '不配置开机自启'
+check "README documents the fixed-loader compatibility boundary" file_contains "$readme" '仅当绝对路径查询精确返回 `127` 时'
+check "README documents exact legacy restricted-line migration" file_contains "$readme" '精确匹配旧受限行'
 check "README ties compatibility mode to Script Editor branding" file_line_contains_both "$readme" '兼容模式' '脚本编辑器'
 check "README makes certificate signing only a possible native-notification enabler" file_contains "$readme" '有效 Apple 证书签名可能使系统允许原生通知，但不是恢复的保证'
 check "README restores native delivery only for observed available authorization" file_contains "$readme" '只有在随后观察到授权状态为 `authorized`、`provisional` 或 `ephemeral` 时才恢复原生通道'
@@ -245,6 +259,9 @@ check "design does not claim servers.json contains polling parameters" file_not_
 check "fallback acceptance no longer unconditionally requires Script Editor" file_not_contains "$fallback_plan" '`usernoted` records one Script Editor notification delivery/presentation for the offline transition'
 check "fallback acceptance names both conditional notification sources" file_contains "$fallback_plan" 'Expected notification source is conditional: `authorized`, `provisional`, or `ephemeral` uses native `com.yxy.gpumonitor`; exact `notificationsNotAllowed` with a non-`denied` current state uses Script Editor compatibility delivery.'
 check "fallback acceptance records the final native result and compatibility limitation" file_contains "$fallback_plan" 'Recorded final live result: native `com.yxy.gpumonitor` delivered the offline notification once without repetition; compatibility was not reproduced in that run.'
+check "four-server design documents the observed interpreter compatibility cause without permanence" file_contains "$four_server_design" '验收时观察到的远端运行时兼容问题'
+check "four-server design limits loader fallback to exact status 127" file_contains "$four_server_design" '仅在首次调用精确返回 `127` 时'
+check "four-server plan records exact legacy-to-new migration" file_contains "$four_server_plan" 'exact legacy → exact new'
 
 if (( failures > 0 )); then
     print -u2 "$failures packaging checks failed"

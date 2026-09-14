@@ -1357,3 +1357,38 @@ repository_status=$(git status --short --untracked-files=all)
 ```
 
 Expected: source and LaunchAgent checks find no autostart integration; the validated System Events query has no GPU Monitor login item; repository status is exactly empty (ignored `.build` and `dist` artifacts do not appear). Exit status `1` from each `rg` is the required “no match” result, while status `0` (match) and status `2+` (read/search error) both fail the gate. Invoke `superpowers:verification-before-completion`, repeat any check it requires, and report each endpoint separately. Full live acceptance is complete only if all four endpoints pass; otherwise identify the unreachable endpoint as an external connectivity blocker without hiding the successful ones.
+
+### Task 7: Narrow loader fallback and transactional restricted-line migration
+
+**Files:**
+
+- Modify: `scripts/provision_ssh.sh`
+- Modify: `Tests/PackagingTests/provisioning_behavior_test.sh`
+- Modify: `Tests/PackagingTests/fixtures/fake_ssh.sh`
+- Modify: `Tests/PackagingTests/fixtures/fake_nvidia_smi.sh`
+- Create: `Tests/PackagingTests/fixtures/fake_nvidia_loader.sh`
+- Modify: `Tests/PackagingTests/package_scripts_test.sh`
+- Modify: `README.md`
+- Modify: `docs/superpowers/specs/2026-09-14-four-server-gpu-monitor-design.md`
+
+**Compatibility boundary:** During the 2026-09-14 acceptance, `js2.blockelite.cn:13000` returned status 127 from the otherwise present and executable `/usr/bin/nvidia-smi` because its declared ELF interpreter path was unavailable. Calling the same binary through `/lib64/ld-linux-x86-64.so.2` succeeded for both fixed read-only queries and returned eight A100 GPUs. Treat this as an observation from that acceptance run, not a permanent endpoint property.
+
+- [x] **Step 1: Add RED coverage for both fixed queries**
+
+The offline harness audits direct and loader invocations. Each query must try absolute `/usr/bin/nvidia-smi` first, use the fixed loader only after exact status 127, propagate non-127 statuses unchanged, and retain the standalone marker plus `&&` sequencing. No branch reads `SSH_ORIGINAL_COMMAND` or incorporates caller input.
+
+- [x] **Step 2: Add RED coverage for exact legacy → exact new migration**
+
+Cover one unique exact legacy line migrating atomically and idempotently, unknown/weak/duplicate same-blob entries failing closed, and the authorized file remaining mode `0600` without leaked temporary files.
+
+- [x] **Step 3: Add RED coverage for source-aware rollback**
+
+After a migration, forced-command, forwarding, and final validation failures must atomically restore the exact legacy line. A newly installed line is still removed, an already-current exact line is never rolled back, and a rollback failure remains a sanitized fail-closed result.
+
+- [x] **Step 4: Implement the minimal fixed command and migration transaction**
+
+Keep one uniform fixed authorized command across all four endpoints. The provisioner accepts only three initial states for the trusted blob: absent, one exact current line, or one exact legacy line. Its later recovery action is respectively `remove-new`, none, or `restore-legacy`.
+
+- [ ] **Step 5: Run the full offline quality gate, commit, then repeat live acceptance separately**
+
+Task 7 itself does not connect to a server or install the app. After its offline test/build/review gate is clean, repeat Task 6 provisioning, production probes, transactional reinstall, configuration, UI, process, and no-autostart checks as a separate live step.
