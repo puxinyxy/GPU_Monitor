@@ -91,6 +91,24 @@ fi
 unset gpu_query_status gpu_loader_status
 
 : > "$forced_command_log"
+gpu_query_status=127
+gpu_loader_status=29
+forced_status=0
+if forced_output=$(run_forced_command 2>&1); then
+    forced_status=0
+else
+    forced_status=$?
+fi
+if [[ "$forced_status" == "29" ]] &&
+    [[ "$forced_output" != *"__GPU_MONITOR_PROCESSES__"* ]] &&
+    [[ "$(<"$forced_command_log")" == $'direct:gpu\nloader:gpu' ]]; then
+    record_pass "GPU loader failure is propagated without emitting the process marker"
+else
+    record_failure "GPU loader failure is propagated without emitting the process marker"
+fi
+unset gpu_query_status gpu_loader_status forced_status
+
+: > "$forced_command_log"
 gpu_query_status=17
 forced_status=0
 if forced_output=$(run_forced_command 2>&1); then
@@ -118,6 +136,24 @@ else
     record_failure "compute query status 127 retries once through the fixed loader"
 fi
 unset compute_query_status compute_loader_status
+
+: > "$forced_command_log"
+compute_query_status=127
+compute_loader_status=31
+forced_status=0
+if forced_output=$(run_forced_command 2>&1); then
+    forced_status=0
+else
+    forced_status=$?
+fi
+if [[ "$forced_status" == "31" ]] &&
+    [[ "$forced_output" == *"__GPU_MONITOR_PROCESSES__"* ]] &&
+    [[ "$(<"$forced_command_log")" == $'direct:gpu\ndirect:compute\nloader:compute' ]]; then
+    record_pass "compute loader failure fails the whole sample with its status"
+else
+    record_failure "compute loader failure fails the whole sample with its status"
+fi
+unset compute_query_status compute_loader_status forced_status
 
 : > "$forced_command_log"
 compute_query_status=23
