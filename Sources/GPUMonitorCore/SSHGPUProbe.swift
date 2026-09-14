@@ -74,7 +74,7 @@ public struct SSHGPUProbe: GPUProbing, Sendable {
             result = try await runner.run(
                 executable: "/usr/bin/ssh",
                 arguments: arguments,
-                timeout: .seconds(8)
+                timeout: .seconds(30)
             )
         } catch is CancellationError {
             throw CancellationError()

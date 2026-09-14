@@ -1043,7 +1043,7 @@ Enter the supplied login password only at each system SSH password prompt. Expec
 
 - [ ] **Step 3: Run the production probe and parser against all four servers**
 
-Build a disposable verifier that links the already-tested `GPUMonitorCore` objects and calls the real `SSHGPUProbe.sample(server:)`. This reuses the production SSH argv, `CommandRunner` eight-second process deadline, failure classification, and full `NVIDIAOutputParser`; it prints only server labels, GPU counts, and A100 inventory results:
+Build a disposable verifier that links the already-tested `GPUMonitorCore` objects and calls the real `SSHGPUProbe.sample(server:)`. This reuses the production SSH argv, `CommandRunner` 30-second overall process deadline, failure classification, and full `NVIDIAOutputParser`; the independent OpenSSH `ConnectTimeout=8` remains unchanged. It prints only server labels, GPU counts, and A100 inventory results:
 
 ```zsh
 (
@@ -1165,27 +1165,38 @@ Expected: signature and `cmp` succeed, process count prints `1`, and `find` prin
 ```zsh
 (
 set -euo pipefail
+export LC_ALL=C
 config="$HOME/Library/Application Support/GPUMonitor/servers.json"
 known_hosts="$HOME/Library/Application Support/GPUMonitor/known_hosts"
+[[ -f "$config" && ! -L "$config" ]]
+[[ -f "$known_hosts" && ! -L "$known_hosts" ]]
 expected_ids=("server-10122" "server-10165" "server-a100-18200" "server-a100-13000")
 expected_labels=("3090 · 10122" "3090 · 10165" "A100 · 18200" "A100 · 13000")
 expected_hosts=("122.207.108.8" "122.207.108.7" "js2.blockelite.cn" "js2.blockelite.cn")
 expected_ports=(10122 10165 18200 13000)
-/usr/bin/plutil -lint "$config"
+
+structure_check=$(
+    /usr/bin/plutil -convert xml1 -o - "$config" |
+        /usr/bin/xmllint --nonet --xpath \
+            'name(/plist/*) = "array" and count(/plist/array/*) = 4' -
+)
+[[ "$structure_check" == true ]]
+
 for index in 0 1 2 3; do
     expected_index=$((index + 1))
-    [[ "$(/usr/bin/plutil -extract "$index.id" raw "$config")" == "$expected_ids[$expected_index]" ]]
-    [[ "$(/usr/bin/plutil -extract "$index.label" raw "$config")" == "$expected_labels[$expected_index]" ]]
-    [[ "$(/usr/bin/plutil -extract "$index.host" raw "$config")" == "$expected_hosts[$expected_index]" ]]
-    [[ "$(/usr/bin/plutil -extract "$index.port" raw "$config")" == "$expected_ports[$expected_index]" ]]
+    actual=$(/usr/bin/plutil -extract "$index.id" raw -expect string -o - "$config")
+    [[ "$actual" == "$expected_ids[$expected_index]" ]]
+    actual=$(/usr/bin/plutil -extract "$index.label" raw -expect string -o - "$config")
+    [[ "$actual" == "$expected_labels[$expected_index]" ]]
+    actual=$(/usr/bin/plutil -extract "$index.host" raw -expect string -o - "$config")
+    [[ "$actual" == "$expected_hosts[$expected_index]" ]]
+    actual=$(/usr/bin/plutil -extract "$index.port" raw -expect integer -o - "$config")
+    [[ "$actual" == "$expected_ports[$expected_index]" ]]
 done
 set +e
-/usr/bin/plutil -extract '4' json "$config" >/dev/null 2>&1
-fifth_record_status=$?
-/usr/bin/grep -Fiq 'password' "$config"
+/usr/bin/grep -Fiq -- password "$config"
 password_match_status=$?
 set -e
-(( fifth_record_status == 1 ))
 (( password_match_status == 1 ))
 /usr/bin/ssh-keygen -F '[122.207.108.8]:10122' -f "$known_hosts" >/dev/null
 /usr/bin/ssh-keygen -F '[122.207.108.7]:10165' -f "$known_hosts" >/dev/null
@@ -1194,11 +1205,11 @@ set -e
 )
 ```
 
-Expected ID/label/host/port values appear in the approved order, the array contains exactly four records, the password-field check succeeds silently, and all four host-key lookups exit zero.
+Expected ID/label/host/port values appear in the approved order, the XML conversion plus XPath check confirms a top-level four-record array without modifying the JSON source, the password-field check succeeds silently, and all four host-key lookups exit zero.
 
 - [ ] **Step 7: Exercise the running menu and observe exact app-owned SSH pairings**
 
-Open the menu, confirm all four labeled sections appear, scroll through both eight-row A100 sections, and verify notification status, last update, `立即刷新`, and `退出` remain visible below the scroll area. Start the following observer in a terminal or background tool session. As soon as its `observer-ready` control message appears on stderr, open the menu and click `立即刷新` once within five seconds. The 35-second window also covers a delayed automatic cycle after an up-to-eight-second in-flight probe; the block records only approved endpoint pairs rather than full SSH arguments:
+Open the menu, confirm all four labeled sections appear, scroll through both eight-row A100 sections, and verify notification status, last update, `立即刷新`, and `退出` remain visible below the scroll area. Start the following observer in a terminal or background tool session. As soon as its `observer-ready` control message appears on stderr, open the menu and click `立即刷新` once within five seconds. The 80-second window covers a pre-existing 30-second outer-bound probe, the 15-second polling interval, and a further 30-second bounded automatic cycle, with a small synchronization margin; the block records only approved endpoint pairs rather than full SSH arguments:
 
 ```zsh
 (
@@ -1216,7 +1227,7 @@ app_pid=$(
 typeset -A seen_pairs
 unexpected_pair=0
 print -u2 -- "observer-ready"
-end_at=$((SECONDS + 35))
+end_at=$((SECONDS + 80))
 while (( SECONDS < end_at )); do
     while read -r parent_pid command; do
         [[ "$parent_pid" == "$app_pid" && "$command" == /usr/bin/ssh\ * ]] || continue

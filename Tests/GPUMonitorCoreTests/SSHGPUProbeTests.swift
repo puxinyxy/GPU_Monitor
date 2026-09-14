@@ -43,7 +43,7 @@ private actor ProbeRecordingRunner: CommandRunning {
 
     #expect(snapshot.server == .server10122)
     #expect(call.executable == "/usr/bin/ssh")
-    #expect(call.timeout == .seconds(8))
+    #expect(call.timeout == .seconds(30))
     #expect(call.arguments == [
         "-T",
         "-F", "/dev/null",
