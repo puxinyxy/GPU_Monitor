@@ -105,6 +105,7 @@ public final class AppModel: ObservableObject {
     private var activeAuthorizationRefresh: ActiveAuthorizationRefresh?
     private var shutdownTask: Task<Void, Never>?
     private var shutdownGeneration: UInt64?
+    private var displayedServerErrorSummary: String?
 
     public init(
         servers: [ServerConfig],
@@ -420,12 +421,26 @@ public final class AppModel: ObservableObject {
                  let .warning(message),
                  let .security(message),
                  let .offline(message):
-                recentErrorSummary = "服务器 \(server.label)：\(message)"
+                let summary = "服务器 \(server.label)：\(message)"
+                recentErrorSummary = summary
+                displayedServerErrorSummary = summary
                 return
             case .unknown, .online, .none:
                 continue
             }
         }
+
+        let allServersOnline = servers.allSatisfy { server in
+            if case .online = cycle.health[server.id] { return true }
+            return false
+        }
+        guard allServersOnline else { return }
+
+        if let displayedServerErrorSummary,
+           recentErrorSummary == displayedServerErrorSummary {
+            recentErrorSummary = nil
+        }
+        displayedServerErrorSummary = nil
     }
 
     deinit {

@@ -802,6 +802,64 @@ func summaryAndColorRepresentUnknownWarningOfflineFreeAndBusyStates() async {
 }
 
 @Test @MainActor
+func healthyCycleClearsPreviouslyDisplayedServerWarning() async {
+    let notifications = FakeNotifications()
+    let model = AppModel(
+        servers: [server10122, server10165],
+        poll: { cycle(snapshots: [:], health: [:]) },
+        notifications: notifications,
+        authorizationProvider: notifications,
+        sleep: { _ in throw CancellationError() }
+    )
+
+    model.applyForTesting(cycle(
+        snapshots: [:],
+        health: [
+            server10122.id: .warning(message: "timeout"),
+            server10165.id: .online,
+        ]
+    ))
+    #expect(model.recentErrorSummary == "服务器 10122：timeout")
+
+    model.applyForTesting(cycle(
+        snapshots: [:],
+        health: [server10122.id: .online, server10165.id: .online]
+    ))
+
+    #expect(model.recentErrorSummary == nil)
+}
+
+@Test @MainActor
+func healthyCyclePreservesNotificationAuthorizationErrorThatReplacedServerWarning() async {
+    let notifications = FakeNotifications()
+    let authorization = MutableAuthorizationProvider(state: .error)
+    let model = AppModel(
+        servers: [server10122, server10165],
+        poll: { cycle(snapshots: [:], health: [:]) },
+        notifications: notifications,
+        authorizationProvider: authorization,
+        sleep: { _ in throw CancellationError() }
+    )
+
+    model.applyForTesting(cycle(
+        snapshots: [:],
+        health: [
+            server10122.id: .warning(message: "timeout"),
+            server10165.id: .online,
+        ]
+    ))
+    await model.refreshNotificationAuthorization()
+    #expect(model.recentErrorSummary == "通知授权状态读取失败")
+
+    model.applyForTesting(cycle(
+        snapshots: [:],
+        health: [server10122.id: .online, server10165.id: .online]
+    ))
+
+    #expect(model.recentErrorSummary == "通知授权状态读取失败")
+}
+
+@Test @MainActor
 func startupConfigurationErrorRemainsVisibleAndMenuUsable() async {
     let notifications = FakeNotifications(requestedState: .error)
     let model = AppModel(
