@@ -91,6 +91,33 @@ struct ServerHealthDisplay: Equatable, Sendable {
     }
 }
 
+enum MenuLayout {
+    static let serverListMaxHeight: CGFloat = 520
+}
+
+struct ScrollableServerList: View {
+    let servers: [ServerConfig]
+    let snapshots: [String: ServerSnapshot]
+    let health: [String: ServerHealth]
+
+    var body: some View {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(Array(servers.enumerated()), id: \.element.id) { index, server in
+                    if index > 0 { Divider() }
+                    ServerSection(
+                        server: server,
+                        snapshot: snapshots[server.id],
+                        health: health[server.id] ?? .unknown
+                    )
+                }
+            }
+        }
+        .scrollIndicators(.visible)
+        .frame(maxHeight: MenuLayout.serverListMaxHeight)
+    }
+}
+
 public struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -110,14 +137,11 @@ public struct MenuContentView: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             } else {
-                ForEach(Array(model.servers.enumerated()), id: \.element.id) { index, server in
-                    if index > 0 { Divider() }
-                    ServerSection(
-                        server: server,
-                        snapshot: model.snapshots[server.id],
-                        health: model.health[server.id] ?? .unknown
-                    )
-                }
+                ScrollableServerList(
+                    servers: model.servers,
+                    snapshots: model.snapshots,
+                    health: model.health
+                )
             }
 
             Divider()
