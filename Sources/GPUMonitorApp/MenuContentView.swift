@@ -92,7 +92,7 @@ struct ServerHealthDisplay: Equatable, Sendable {
 }
 
 enum MenuLayout {
-    static let serverListMaxHeight: CGFloat = 520
+    static let serverListHeight: CGFloat = 520
 }
 
 struct ScrollableServerList: View {
@@ -114,7 +114,7 @@ struct ScrollableServerList: View {
             }
         }
         .scrollIndicators(.visible)
-        .frame(maxHeight: MenuLayout.serverListMaxHeight)
+        .frame(height: MenuLayout.serverListHeight)
     }
 }
 
